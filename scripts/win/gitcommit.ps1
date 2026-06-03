@@ -44,5 +44,9 @@ Invoke-GitCommand @("commit", "-m", $message)
 Invoke-GitCommand @("pull", "--rebase", "origin", $targetBranch)
 Invoke-GitCommand @("push", "-u", "origin", "HEAD")
 
+$commitSha = (& git rev-parse HEAD).Trim()
+$commitSha | Set-Clipboard
+
 Write-Host "`nCommitted and pushed:" -ForegroundColor Green
-git rev-parse HEAD
+Write-Host $commitSha
+Write-Host "Commit SHA copied to clipboard." -ForegroundColor Green
