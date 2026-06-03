@@ -3,9 +3,18 @@
 $ErrorActionPreference = "Stop"
 
 function Confirm-YesNo {
-  param([string]$Question)
+  param(
+    [string]$Question,
+    [bool]$DefaultYes = $true
+  )
 
-  $answer = Read-Host "$Question [y/N]"
+  $suffix = if ($DefaultYes) { "[Y/n]" } else { "[y/N]" }
+  $answer = Read-Host "$Question $suffix"
+
+  if ([string]::IsNullOrWhiteSpace($answer)) {
+    return $DefaultYes
+  }
+
   return $answer -match '^(y|yes)$'
 }
 
@@ -27,14 +36,18 @@ $currentBranch = (& git branch --show-current).Trim()
 
 Write-Host "`nCurrent branch: $currentBranch" -ForegroundColor Yellow
 
-if (Confirm-YesNo "Commit to main? No = commit to '$currentBranch'") {
+if ($currentBranch -eq "main") {
   $targetBranch = "main"
+  Write-Host "Already on main." -ForegroundColor Yellow
+} else {
+  $useCurrentBranch = Confirm-YesNo "Commit to current branch '$currentBranch'? No = switch to main"
 
-  if ($currentBranch -ne "main") {
+  if ($useCurrentBranch) {
+    $targetBranch = $currentBranch
+  } else {
+    $targetBranch = "main"
     Invoke-GitCommand @("switch", "main")
   }
-} else {
-  $targetBranch = $currentBranch
 }
 
 $message = Read-Host "`nCommit message"
