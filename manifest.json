@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "OtterCopy",
+  "version": "1.0.0",
+  "description": "Copy the transcript from the current transcript page.",
+  "permissions": ["activeTab", "clipboardWrite", "scripting", "storage", "unlimitedStorage"],
+  "host_permissions": [
+    "https://api.groq.com/*",
+    "https://api.openai.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://openrouter.ai/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Copy transcript"
+  }
+}

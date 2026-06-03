@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OtterCopy</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="popup">
+      <header class="popup-header">
+        <div>
+          <h1>OtterCopy</h1>
+          <p id="activeModelSummary">No model selected</p>
+          <p id="finalPassModelSummary">Final pass: active model</p>
+          <p id="activePromptSummary">No prompt selected</p>
+        </div>
+        <button id="modelSettingsButton" class="icon-button" type="button" title="Model settings">
+          Settings
+        </button>
+      </header>
+
+      <button class="copy-action" type="button" data-mode="exact">
+        Copy exact transcript
+      </button>
+      <button class="copy-action ai-action" type="button" data-mode="ai-refine">
+        Refine and copy
+      </button>
+      <button class="copy-action extended-action" type="button" data-mode="extended-refine">
+        Extended refine and copy
+      </button>
+      <button id="stopRefinementButton" class="stop-action" type="button">
+        Stop refinement
+      </button>
+      <button id="copyLatestResultButton" class="saved-result-action" type="button">
+        Copy latest result
+      </button>
+      <button id="copyDebugLogButton" class="debug-action" type="button">
+        Copy latest debug log
+      </button>
+      <p id="latestResultSummary" class="result-summary">No saved result</p>
+      <p id="status" role="status" aria-live="polite"></p>
+
+      <section id="modelSettingsPanel" class="settings-panel hidden" aria-labelledby="modelSettingsTitle">
+        <div class="settings-header">
+          <h2 id="modelSettingsTitle">Model Settings</h2>
+          <button id="closeModelSettingsButton" class="icon-button" type="button" title="Close">
+            Close
+          </button>
+        </div>
+
+        <p id="modelSettingsStatus" class="settings-status" role="status" aria-live="polite"></p>
+        <div id="modelList" class="model-list"></div>
+
+        <form id="modelForm" class="model-form">
+          <input id="modelId" type="hidden">
+
+          <label>
+            <span>Name</span>
+            <input id="modelName" type="text" required placeholder="Gemma 4 31B">
+          </label>
+
+          <label>
+            <span>Provider</span>
+            <input id="modelProvider" type="text" required placeholder="google">
+          </label>
+
+          <label>
+            <span>Adapter</span>
+            <select id="modelAdapter" required>
+              <option value="google-genai">google-genai</option>
+              <option value="openai-compatible">openai-compatible</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Model ID</span>
+            <input id="modelNameId" type="text" required placeholder="gemma-4-31b-it">
+          </label>
+
+          <label>
+            <span>API key</span>
+            <input id="modelApiKey" type="password" placeholder="Stored locally in this browser">
+          </label>
+
+          <label>
+            <span>Base URL</span>
+            <input id="modelBaseUrl" type="url" placeholder="For OpenAI-compatible providers">
+          </label>
+
+          <label>
+            <span>Headers JSON</span>
+            <textarea id="modelHeaders" rows="3" spellcheck="false">{}</textarea>
+          </label>
+
+          <label>
+            <span>Options JSON</span>
+            <textarea id="modelOptions" rows="3" spellcheck="false">{}</textarea>
+          </label>
+
+          <label class="checkbox-field">
+            <input id="modelActive" type="checkbox">
+            <span>Set as active model</span>
+          </label>
+
+          <label class="checkbox-field">
+            <input id="modelFinalPassActive" type="checkbox">
+            <span>Use for extended final pass</span>
+          </label>
+
+          <div class="form-actions">
+            <button id="saveModelButton" type="submit">Save model</button>
+            <button id="cancelModelEditButton" class="secondary" type="button">Clear</button>
+          </div>
+        </form>
+
+        <div class="settings-divider"></div>
+
+        <div class="settings-header">
+          <h2>Prompt Settings</h2>
+        </div>
+
+        <p id="promptSettingsStatus" class="settings-status" role="status" aria-live="polite"></p>
+        <div id="promptList" class="model-list"></div>
+
+        <form id="promptForm" class="model-form">
+          <input id="promptId" type="hidden">
+
+          <label>
+            <span>Prompt name</span>
+            <input id="promptName" type="text" required placeholder="Refinement">
+          </label>
+
+          <label>
+            <span>Prompt instructions</span>
+            <textarea id="promptContent" rows="10" required spellcheck="true"></textarea>
+          </label>
+
+          <label class="checkbox-field">
+            <input id="promptActive" type="checkbox">
+            <span>Set as active prompt</span>
+          </label>
+
+          <div class="form-actions">
+            <button id="savePromptButton" type="submit">Save prompt</button>
+            <button id="cancelPromptEditButton" class="secondary" type="button">New prompt</button>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <script src="modelStore.js"></script>
+    <script src="promptStore.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
