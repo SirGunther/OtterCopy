@@ -4,6 +4,8 @@ Use the full governing prompt as the authority for structure, ordering, tone, co
 
 Use the full transcript to verify that the draft preserves concrete names, constraints, and technical details.
 
+Create an `### Objective` section immediately after the top-level Markdown header. Derive it from the complete reconciled context, not from any single section draft. The Objective should align the final Problem, Requirement, Solution, risks, open questions, and action items around the intended outcome. Keep it concise and do not turn it into implementation steps.
+
 Apply evidence discipline before writing the final artifact:
 
 * Assert implementation details only when they are explicitly supported by the transcript.

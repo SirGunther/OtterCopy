@@ -10,6 +10,74 @@ Personal project changelog for extension behavior, prompt workflow changes, and 
 
 ## Session Log
 
+### 2026-06-04T17:52:07Z — OtterCopy
+
+Summary: Corrected Objective prompt scope to final-pass only.
+
+Files / areas:
+- `prompts/refinement.md`
+- `docs/ottercopy/ottercopy-changelog.md`
+
+User-visible impact:
+- Removed the Objective instruction from the main governing refinement prompt because it changed the weighting and nature of intermediate/single-pass responses.
+- Objective remains only in the extended final-pass instruction path through `prompts/extended/08-final-pass.md` and runtime final synthesis rules in `background.js`.
+- This restores the main prompt to the original Problem → Requirement → Solution framing while preserving final reconciler-only Objective injection.
+
+Tests run:
+- `node --check background.js` — syntax check passed.
+- `node --check popup.js` — syntax check passed.
+- `node --check content.js` — syntax check passed.
+- `node --check modelProviderClient.js` — syntax check passed.
+- `Select-String -Path prompts\refinement.md -Pattern "Objective"` — verified no Objective instruction remains in the main prompt.
+- `Select-String` checks verified Objective remains present in `prompts/extended/08-final-pass.md` and runtime final synthesis instructions in `background.js`.
+
+Tests added/updated:
+- No persistent automated tests added; this repo still has no package/test harness. Residual risk: output quality should be revalidated with a real extended run.
+
+Regression impact:
+- Isolated to prompt-scope correction; execution flow, saved-result behavior, cancellation, polling, and debug logging remain unchanged.
+
+API docs:
+- Not relevant: browser extension only; no HTTP API contract or Swagger/OpenAPI surface exists in this repo.
+
+Tooling gates:
+- No package-level lint/test/audit gates found because the repo has no `package.json`; direct syntax and prompt-presence checks were run.
+
+### 2026-06-04T17:12:47Z — OtterCopy
+
+Summary: Added final-pass Objective section requirement.
+
+Files / areas:
+- `prompts/refinement.md`
+- `prompts/extended/08-final-pass.md`
+- `background.js`
+- `docs/ottercopy/ottercopy-changelog.md`
+
+User-visible impact:
+- Extended final synthesis now instructs the reconciler to place an `### Objective` section immediately after the top-level Markdown header.
+- The Objective is derived from the complete reconciled context, including Problem, Requirement, Solution, risks, open questions, and action items.
+- The Objective is constrained to a concise outcome statement rather than implementation steps.
+- The packaged governing prompt now documents the same output shape for future prompt resets and single-pass prompt use.
+
+Tests run:
+- `node --check background.js` — syntax check passed.
+- `node --check popup.js` — syntax check passed.
+- `node --check content.js` — syntax check passed.
+- `node --check modelProviderClient.js` — syntax check passed.
+- Mocked `runExtendedRefinement(...)` final prompt capture — verified the runtime final request includes the Objective order, derivation, and concision rules.
+
+Tests added/updated:
+- No persistent automated tests added; this repo still has no package/test harness. Residual risk: final artifact quality should be validated with a real transcript output.
+
+Regression impact:
+- Isolated to prompt/output-shape instructions; model call sequencing, saved-result behavior, cancellation, and debug logging remain unchanged.
+
+API docs:
+- Not relevant: browser extension only; no HTTP API contract or Swagger/OpenAPI surface exists in this repo.
+
+Tooling gates:
+- No package-level lint/test/audit gates found because the repo has no `package.json`; direct syntax and mocked prompt-capture checks were run with Node.
+
 ### 2026-06-02T19:14:15Z — OtterCopy
 
 Summary: Added popup polling for saved extended-refinement result status.
