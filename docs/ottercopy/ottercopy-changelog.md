@@ -10,6 +10,45 @@ Personal project changelog for extension behavior, prompt workflow changes, and 
 
 ## Session Log
 
+### 2026-06-04T18:17:06Z — OtterCopy
+
+Summary: Moved Objective generation to a separate post-final insertion pass.
+
+Files / areas:
+- `background.js`
+- `prompts/extended/08-final-pass.md`
+- `promptStore.js`
+- `docs/ottercopy/ottercopy-changelog.md`
+
+User-visible impact:
+- Final synthesis is Objective-agnostic again and produces the normal refined artifact.
+- A separate `objective-insertion` model call now runs after final synthesis using the base/active model, generates only the `### Objective` block, and code inserts that block between the H1 and the first section without letting the model rewrite the note.
+- Debug logs now show the additional `objective-insertion` call and the expected call plan includes it.
+- Built-in prompt storage self-heals if the browser cached the short-lived bad `### Objective` instruction in the main refinement prompt.
+
+Tests run:
+- `node --check background.js` — syntax check passed.
+- `node --check promptStore.js` — syntax check passed.
+- `node --check popup.js` — syntax check passed.
+- `node --check content.js` — syntax check passed.
+- `node --check modelProviderClient.js` — syntax check passed.
+- `node -e "JSON.parse(require('fs').readFileSync('manifest.json','utf8')); console.log('manifest ok')"` — manifest JSON parsed successfully.
+- Mocked `runExtendedRefinement(...)` — verified final synthesis prompt no longer includes Objective instructions, the separate objective-only call runs after final synthesis, and the generated block is inserted after the H1.
+- Mocked `promptStore.getPrompts()` with a cached built-in prompt containing `### Objective` — verified the cached Objective instruction is removed by refreshing from the packaged prompt.
+
+Tests added/updated:
+- No persistent automated tests added; this repo still has no package/test harness. Residual risk: objective quality should be checked with a real transcript, especially that the objective-only model does not overreach.
+
+Regression impact:
+- Extended output shape intentionally changes via deterministic insertion after final synthesis.
+- Final synthesis, saved-result behavior, cancellation, polling, and debug logging remain otherwise unchanged.
+
+API docs:
+- Not relevant: browser extension only; no HTTP API contract or Swagger/OpenAPI surface exists in this repo.
+
+Tooling gates:
+- No package-level lint/test/audit gates found because the repo has no `package.json`; direct syntax, manifest, mocked pipeline, and prompt-store checks were run.
+
 ### 2026-06-04T17:52:07Z — OtterCopy
 
 Summary: Corrected Objective prompt scope to final-pass only.

@@ -81,12 +81,17 @@
   async function hydrateBuiltInPrompts(prompts) {
     let changed = false;
     const hydrated = [];
+    const defaultPromptContent = await loadDefaultPromptContent();
 
     for (const prompt of prompts) {
-      if (prompt.builtIn && !prompt.content && prompt.sourcePath === DEFAULT_PROMPT_PATH) {
+      if (
+        prompt.builtIn &&
+        prompt.sourcePath === DEFAULT_PROMPT_PATH &&
+        shouldRefreshBuiltInPromptContent(prompt.content, defaultPromptContent)
+      ) {
         hydrated.push({
           ...prompt,
-          content: await loadDefaultPromptContent(),
+          content: defaultPromptContent,
         });
         changed = true;
       } else {
@@ -95,6 +100,13 @@
     }
 
     return { prompts: hydrated, changed };
+  }
+
+  function shouldRefreshBuiltInPromptContent(currentContent, defaultContent) {
+    const current = normalizeString(currentContent);
+    const packaged = normalizeString(defaultContent);
+    if (!current) return true;
+    return current.includes("### Objective") && !packaged.includes("### Objective");
   }
 
   async function getPrompts() {

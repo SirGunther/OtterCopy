@@ -649,12 +649,37 @@ async function runExtendedRefinement({
       debugRequest: finalInput.debugRequest,
     });
     finalGenerated.entry.normalizedResponseText = finalGenerated.result.text || "";
+    await assertExtendedRunNotCancelled(cancellationRunId);
+    const objectiveInput = formatObjectiveInsertionInput({
+      trace,
+      finalArtifact: finalGenerated.result.text || "",
+      transcriptText,
+      sectionResults,
+    });
+    const objectiveGenerated = await generateExtendedModelContent({
+      cancellationRunId,
+      trace,
+      modelConfig,
+      callType: "objective-insertion",
+      sectionName: "Objective",
+      passName: "Post Final",
+      role: "Objective alignment editor",
+      contents: objectiveInput.contents,
+      debugRequest: objectiveInput.debugRequest,
+    });
+    const objectiveBlock = normalizeObjectiveBlock(objectiveGenerated.result.text || "");
+    objectiveGenerated.entry.normalizedResponseText = objectiveBlock;
+    const finalTextWithObjective = insertObjectiveBlock(
+      finalGenerated.result.text || "",
+      objectiveBlock,
+    );
     trace.status = "completed";
     trace.completedAt = new Date().toISOString();
-    trace.finalText = finalGenerated.result.text || "";
+    trace.finalText = finalTextWithObjective;
     await saveExtendedDebugLog(trace);
     return {
       ...finalGenerated.result,
+      text: finalTextWithObjective,
       debugRunId: trace.runId,
     };
   } catch (error) {
@@ -706,7 +731,7 @@ function createExtendedDebugLog({ modelConfig, finalPassModelConfig, transcriptT
     rateLimit: {
       lightweightCallDelayMs: EXTENDED_LIGHTWEIGHT_CALL_DELAY_MS,
       expectedDefaultCallPlan:
-        "14 lightweight persona calls + optional repair calls + 1 final synthesis call",
+        "14 lightweight persona calls + optional repair calls + 1 final synthesis call + 1 objective insertion call",
     },
     models: {
       lightweight: summarizeModelConfig(modelConfig),
@@ -1214,9 +1239,6 @@ function formatExtendedFinalInput({
     cleanText(finalDirective),
     "",
     "Final synthesis rules:",
-    "The final Markdown output must start with the top-level header, then an `### Objective` section, then the normal Problem, Requirement, and Solution flow.",
-    "Derive the Objective from the complete reconciled context, including Problem, Requirement, Solution, risks, open questions, and action items. Do not rely on any single section draft alone.",
-    "Keep the Objective concise: one short paragraph or 1-2 sentences. It should describe the intended outcome, not list implementation steps.",
     "Use Explicit claims freely.",
     "Use Strong Inference claims when they improve the artifact and remain grounded, but phrase inferred implementation direction as preferred, likely, or recommended rather than already decided.",
     "Use Weak Inference claims only with qualified wording, or move them into Implementation Notes, Risks, Open Questions, or investigation-focused Action Items.",
@@ -1262,6 +1284,86 @@ function formatExtendedFinalInput({
       },
     },
   };
+}
+
+function formatObjectiveInsertionInput({ trace, finalArtifact, transcriptText, sectionResults }) {
+  const collectedSectionResults = formatCollectedSectionResults(sectionResults);
+  const contents = [
+    "You are the Objective Alignment Editor for a completed engineering note.",
+    "",
+    "Your task is narrow:",
+    "- Generate only the Objective block that should be inserted after the top-level Markdown header.",
+    "- Do not rewrite, summarize, reorder, or re-output the completed note.",
+    "- Do not introduce new facts.",
+    "- Derive the objective from the completed note as the authority, using the transcript and section drafts only to resolve alignment.",
+    "- Keep the objective concise: one short paragraph or 1-2 sentences.",
+    "- Describe the intended outcome of the work, not the implementation steps.",
+    "",
+    "Return exactly this shape and nothing else:",
+    "",
+    "### Objective",
+    "",
+    "<objective text>",
+    "",
+    "Completed note:",
+    cleanText(finalArtifact),
+    "",
+    "Full transcript:",
+    cleanText(transcriptText),
+    "",
+    "Collected section outputs and claim ledgers:",
+    collectedSectionResults,
+  ].join("\n");
+
+  return {
+    contents,
+    debugRequest: {
+      refs: {
+        finalArtifact: createDebugTextRef(trace, "Completed final artifact before Objective", finalArtifact),
+        transcript: createDebugTextRef(trace, "Full transcript", transcriptText),
+        collectedSectionResults: createDebugTextRef(
+          trace,
+          "Collected section outputs and claim ledgers",
+          collectedSectionResults,
+        ),
+      },
+      uniqueParts: {
+        role: "Objective alignment editor",
+        instruction: "Generate only the Objective block for insertion after the H1.",
+      },
+    },
+  };
+}
+
+function normalizeObjectiveBlock(text) {
+  const value = cleanText(text);
+  const withoutFences = value
+    .replace(/^```(?:markdown|md)?\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  const body = withoutFences
+    .replace(/^#{1,6}\s*Objective\s*/i, "")
+    .trim();
+  const objectiveText = body || "Clarify the intended outcome of the work in a way that aligns the problem, requirement, solution, risks, questions, and action items.";
+  return ["### Objective", "", objectiveText].join("\n");
+}
+
+function insertObjectiveBlock(finalArtifact, objectiveBlock) {
+  const artifact = cleanText(finalArtifact);
+  const objective = cleanText(objectiveBlock);
+  if (!artifact) return objective;
+
+  const withoutExistingObjective = artifact.replace(
+    /(^# .+\n+)(### Objective\n[\s\S]*?)(?=\n###\s+)/,
+    "$1",
+  );
+  const headerMatch = withoutExistingObjective.match(/^(# .+)(?:\n+|$)([\s\S]*)$/);
+  if (!headerMatch) {
+    return cleanText([objective, withoutExistingObjective].filter(Boolean).join("\n\n"));
+  }
+
+  const [, header, rest] = headerMatch;
+  return cleanText([header, objective, cleanText(rest)].filter(Boolean).join("\n\n"));
 }
 
 function formatClaimLedgerInstructions() {
