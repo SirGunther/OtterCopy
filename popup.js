@@ -1,6 +1,7 @@
 const COPY_ACTION = "copyTranscript";
 const REFINE_ACTION = "refineTranscript";
 const START_EXTENDED_ACTION = "startExtendedRefinement";
+const START_EXTENDED_HANDOFF_ACTION = "startExtendedHandoff";
 const STOP_EXTENDED_ACTION = "stopExtendedRefinement";
 const LATEST_RESULT_ACTION = "getLatestRefinementResult";
 const DEBUG_LOG_ACTION = "getExtendedDebugLog";
@@ -80,19 +81,19 @@ async function copyFromActiveTab(mode) {
       throw new Error("No active tab found.");
     }
 
-    if (mode === "extended-refine") {
+    if (mode === "extended-refine" || mode === "extended-handoff") {
       const response = await chrome.runtime.sendMessage({
-        action: START_EXTENDED_ACTION,
+        action: mode === "extended-handoff" ? START_EXTENDED_HANDOFF_ACTION : START_EXTENDED_ACTION,
         tabId: tab.id,
       });
 
       if (!response?.ok) {
-        throw new Error(response?.error || "Extended refinement failed to start.");
+        throw new Error(response?.error || `${getProcessLabel(mode)} failed to start.`);
       }
 
       await refreshLatestResultSummary();
       startLatestResultPolling();
-      setStatus("Extended refinement started. You can close this popup.", "success");
+      setStatus(`${getProcessLabel(mode)} started. You can close this popup.`, "success");
       return;
     }
 
@@ -293,7 +294,14 @@ function formatTimestamp(value) {
 function getBusyStatus(mode) {
   if (mode === "ai-refine") return "Refining transcript...";
   if (mode === "extended-refine") return "Running extended refinement...";
+  if (mode === "extended-handoff") return "Running engineering handoff...";
   return "Copying...";
+}
+
+function getProcessLabel(mode) {
+  if (mode === "extended-handoff") return "Engineering handoff";
+  if (mode === "extended-refine") return "Extended refinement";
+  return "Process";
 }
 
 async function showPageToast(tabId, message) {

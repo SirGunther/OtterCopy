@@ -3,6 +3,7 @@ importScripts("modelStore.js", "promptStore.js", "modelProviderClient.js");
 const EXTRACT_TRANSCRIPT_ACTION = "extractTranscript";
 const REFINE_TRANSCRIPT_ACTION = "refineTranscript";
 const START_EXTENDED_REFINEMENT_ACTION = "startExtendedRefinement";
+const START_EXTENDED_HANDOFF_ACTION = "startExtendedHandoff";
 const STOP_EXTENDED_REFINEMENT_ACTION = "stopExtendedRefinement";
 const GET_LATEST_REFINEMENT_RESULT_ACTION = "getLatestRefinementResult";
 const GET_EXTENDED_DEBUG_LOG_ACTION = "getExtendedDebugLog";
@@ -20,6 +21,8 @@ const CLAIM_LEDGER_CONTRACT = Object.freeze([
 ]);
 const EXTENDED_LIGHTWEIGHT_CALL_DELAY_MS = 4200;
 const EXTENDED_PERSONA_MATRIX_PATH = "prompts/personalities/matrix.md";
+const HANDOFF_GOVERNING_PROMPT_PATH = "prompts/handoff.md";
+const HANDOFF_PERSONA_MATRIX_PATH = "prompts/personalities/handoffmatrix.md";
 const EXTENDED_SECTION_PIPELINE = Object.freeze([
   {
     name: "Header and Problem",
@@ -212,6 +215,167 @@ const EXTENDED_SECTION_PIPELINE = Object.freeze([
   },
 ]);
 const EXTENDED_FINAL_DIRECTIVE_PATH = "prompts/extended/08-final-pass.md";
+const HANDOFF_SECTION_PIPELINE = Object.freeze([
+  {
+    name: "Header + Intent",
+    path: "prompts/extended-handoff/01-header-intent.md",
+    relationship: "handoff category and session intent plus practical framing review",
+    primary: {
+      name: "Engineering Context Lead",
+      why:
+        "This person establishes why the handoff conversation happened and keeps the artifact grounded in the actual work being transferred, clarified, continued, or unblocked.",
+      how:
+        "They listen for the ticket, project, bug, workflow, system area, or implementation thread that caused the conversation to happen now.",
+      produces:
+        "A clear category, title, and Session Intent centered on what work is being handed off, why the discussion mattered, and what continuation it enables.",
+    },
+    secondary: {
+      name: "Handoff Framing Reviewer",
+      why:
+        "This person prevents the intent from becoming either too broad, like a full project objective, or too narrow, like a transcript topic label.",
+      how:
+        "They ask whether the stated intent explains this specific session rather than inventing background, overstating goals, or merely repeating the opening topic.",
+      produces:
+        "A tightened Session Intent that captures the practical reason for the conversation without overclaiming the larger project purpose.",
+    },
+  },
+  {
+    name: "State of Work",
+    path: "prompts/extended-handoff/02-state-of-work.md",
+    relationship: "current work status plus continuation-critical context compression",
+    primary: {
+      name: "Implementation Continuity Engineer",
+      why:
+        "This person captures where the work actually stands so another engineer can continue without needing the original conversation.",
+      how:
+        "They look for what was already done, tried, inspected, changed, tested, ruled out, discovered, completed, blocked, or left partially finished.",
+      produces:
+        "A clear State of Work describing the current condition of the task, relevant technical context, and what the prior engineer effectively handed over.",
+    },
+    secondary: {
+      name: "Context Compression Reviewer",
+      why:
+        "This person keeps the handoff useful without turning it into a transcript recap or an oversized project history.",
+      how:
+        "They separate continuation-critical context from tangents, repeated discussion, generic background, and details that do not help the next person proceed.",
+      produces:
+        "A compressed State of Work that preserves concrete names, constraints, systems, and status while removing noise and unsupported background.",
+    },
+  },
+  {
+    name: "Continuation Plan",
+    path: "prompts/extended-handoff/03-continuation-plan.md",
+    relationship: "practical next-step plan plus investigation boundary review",
+    primary: {
+      name: "Next-Step Planning Engineer",
+      why:
+        "This person turns the current state into a practical path forward for the next engineer or follow-up session.",
+      how:
+        "They think in continuation order: what to verify first, what to implement next, what to investigate, what decision points remain, and what depends on what.",
+      produces:
+        "A concise Continuation Plan describing the likely path forward, including implementation, verification, and investigation paths where relevant.",
+    },
+    secondary: {
+      name: "Investigation Boundary Reviewer",
+      why:
+        "This person prevents exploratory leads from being mistaken for confirmed next steps or assigned work.",
+      how:
+        "They distinguish confirmed direction from likely direction, investigation paths, assumptions, unresolved signals, and speculative possibilities.",
+      produces:
+        "A qualified Continuation Plan that preserves useful investigation leads while clearly separating confirmed steps from exploratory follow-up.",
+    },
+  },
+  {
+    name: "Watchouts",
+    path: "prompts/extended-handoff/04-watchouts.md",
+    relationship: "continuation risk discovery plus assumption qualification",
+    primary: {
+      name: "Continuation Risk Engineer",
+      why:
+        "This person identifies the risks, gotchas, fragile areas, and easy-to-misread details that could derail the next person continuing the work.",
+      how:
+        "They look for hidden assumptions, confusing behavior, partial verification, brittle code paths, dependency ordering, coordination gaps, and misleading signals.",
+      produces:
+        "Watchouts focused on practical continuation safety rather than generic engineering risk.",
+    },
+    secondary: {
+      name: "Assumption Check Reviewer",
+      why:
+        "This person makes sure the handoff does not quietly treat assumptions, guesses, or incomplete verification as settled facts.",
+      how:
+        "They examine whether each caution is supported by the transcript, whether it changes continuation, and whether it belongs in Watchouts, Open Questions, or nowhere.",
+      produces:
+        "A pruned Watchouts section that keeps only material cautions and properly qualifies uncertain or inferred concerns.",
+    },
+  },
+  {
+    name: "Open Questions",
+    path: "prompts/extended-handoff/05-open-questions.md",
+    relationship: "material continuation uncertainty plus relevance pruning",
+    primary: {
+      name: "Continuation Uncertainty Engineer",
+      why:
+        "This person identifies unresolved questions that could change what gets built, investigated, tested, sequenced, assigned, or communicated next.",
+      how:
+        "They look for missing facts, unresolved ownership, incomplete verification, unclear requirements, unknown downstream effects, and decisions deferred by the session.",
+      produces: "Only unresolved questions that materially affect continuation of the work.",
+    },
+    secondary: {
+      name: "Question Relevance Reviewer",
+      why:
+        "This person prevents the artifact from collecting interesting but nonessential questions.",
+      how:
+        "They ask whether answering each question would actually change the next step, investigation path, implementation choice, testing plan, ownership, or communication.",
+      produces: "A reduced Open Questions list containing only questions that matter to the handoff.",
+    },
+  },
+  {
+    name: "Action Items",
+    path: "prompts/extended-handoff/06-action-items.md",
+    relationship: "ordered follow-up work plus new-engineer handoff clarity",
+    primary: {
+      name: "Execution Sequencing Engineer",
+      why:
+        "This person converts the continuation plan into concrete work that can be picked up after the handoff.",
+      how:
+        "They think in dependency order: what must happen first, what can happen next, what must be verified, and what should be checked before the work is considered done.",
+      produces: "Ordered checklist items that describe immediate follow-up tasks.",
+    },
+    secondary: {
+      name: "New Engineer Handoff Reviewer",
+      why:
+        "This person reads the action items as someone who did not attend the conversation and still needs to execute the work correctly.",
+      how:
+        "They look for vague verbs, missing context, hidden assumptions, unclear sequencing, unassigned investigation, and items that require tribal knowledge.",
+      produces: "A cleaned-up checklist that is concrete, understandable, and executable by another engineer.",
+    },
+  },
+]);
+const HANDOFF_FINAL_DIRECTIVE_PATH = "prompts/extended-handoff/07-final-pass.md";
+const EXTENDED_PIPELINES = Object.freeze({
+  refinement: Object.freeze({
+    key: "refinement",
+    mode: "extended-refine",
+    label: "Extended refinement",
+    governingPromptSource: "activePrompt",
+    governingPromptPath: "",
+    personaMatrixPath: EXTENDED_PERSONA_MATRIX_PATH,
+    sectionPipeline: EXTENDED_SECTION_PIPELINE,
+    finalDirectivePath: EXTENDED_FINAL_DIRECTIVE_PATH,
+    savedMessage: "Extended refinement saved.",
+  }),
+  handoff: Object.freeze({
+    key: "handoff",
+    mode: "extended-handoff",
+    label: "Engineering handoff",
+    governingPromptSource: "file",
+    governingPromptPath: HANDOFF_GOVERNING_PROMPT_PATH,
+    personaMatrixPath: HANDOFF_PERSONA_MATRIX_PATH,
+    sectionPipeline: HANDOFF_SECTION_PIPELINE,
+    finalDirectivePath: HANDOFF_FINAL_DIRECTIVE_PATH,
+    savedMessage: "Engineering handoff saved.",
+  }),
+});
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.action.setBadgeText({ text: "" });
@@ -219,12 +383,24 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.action === START_EXTENDED_REFINEMENT_ACTION) {
-    startExtendedRefinementJob(message)
+    startExtendedRefinementJob({ ...message, pipelineKey: "refinement" })
       .then((result) => sendResponse(result))
       .catch((error) => {
         sendResponse({
           ok: false,
           error: error.message || "Could not start extended refinement.",
+        });
+      });
+    return true;
+  }
+
+  if (message.action === START_EXTENDED_HANDOFF_ACTION) {
+    startExtendedRefinementJob({ ...message, pipelineKey: "handoff" })
+      .then((result) => sendResponse(result))
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          error: error.message || "Could not start engineering handoff.",
         });
       });
     return true;
@@ -347,7 +523,16 @@ async function refineTranscript({ tabId, mode }) {
   };
 }
 
-async function startExtendedRefinementJob({ tabId }) {
+function getExtendedPipeline(pipelineKey = "refinement") {
+  const pipeline = EXTENDED_PIPELINES[pipelineKey] || null;
+  if (!pipeline) {
+    throw new Error(`Unknown extended pipeline: ${pipelineKey}`);
+  }
+  return pipeline;
+}
+
+async function startExtendedRefinementJob({ tabId, pipelineKey = "refinement" }) {
+  const pipeline = getExtendedPipeline(pipelineKey);
   if (!tabId) {
     throw new Error("No active tab found.");
   }
@@ -357,11 +542,11 @@ async function startExtendedRefinementJob({ tabId }) {
     throw new Error("An extended refinement is already running.");
   }
 
-  const runId = `refinement-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  const runId = `${pipeline.key}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   cancelledExtendedRunIds.delete(runId);
   await saveLatestRefinementResult({
     runId,
-    mode: "extended-refine",
+    mode: pipeline.mode,
     status: "running",
     startedAt: new Date().toISOString(),
     completedAt: "",
@@ -374,8 +559,8 @@ async function startExtendedRefinementJob({ tabId }) {
     error: "",
   });
 
-  runExtendedRefinementJob({ tabId, runId }).catch((error) => {
-    console.error("OtterCopy: extended refinement job failed", error);
+  runExtendedRefinementJob({ tabId, runId, pipeline }).catch((error) => {
+    console.error(`OtterCopy: ${pipeline.label.toLowerCase()} job failed`, error);
   });
 
   return {
@@ -384,7 +569,7 @@ async function startExtendedRefinementJob({ tabId }) {
   };
 }
 
-async function runExtendedRefinementJob({ tabId, runId }) {
+async function runExtendedRefinementJob({ tabId, runId, pipeline = EXTENDED_PIPELINES.refinement }) {
   try {
     await assertExtendedRunNotCancelled(runId);
     await chrome.scripting.executeScript({
@@ -416,8 +601,19 @@ async function runExtendedRefinementJob({ tabId, runId }) {
       throw new Error("No active model is configured.");
     }
 
-    const prompts = await globalThis.OtterCopyPromptStore.getPrompts();
-    const activePrompt = globalThis.OtterCopyPromptStore.getActivePrompt(prompts);
+    let activePrompt = null;
+    let governingPrompt = "";
+    if (pipeline.governingPromptSource === "file") {
+      governingPrompt = await loadDirectiveFile(pipeline.governingPromptPath);
+      activePrompt = {
+        id: pipeline.key,
+        name: pipeline.label,
+      };
+    } else {
+      const prompts = await globalThis.OtterCopyPromptStore.getPrompts();
+      activePrompt = globalThis.OtterCopyPromptStore.getActivePrompt(prompts);
+      governingPrompt = activePrompt?.content || "";
+    }
     await mergeLatestRefinementResult(runId, {
       transcriptCharacterCount: transcriptText.length,
       model: summarizeModelConfig(activeModel),
@@ -432,9 +628,10 @@ async function runExtendedRefinementJob({ tabId, runId }) {
 
     const result = await runExtendedRefinement({
       cancellationRunId: runId,
+      pipeline,
       modelConfig: activeModel,
       finalPassModelConfig: finalPassModel,
-      governingPrompt: activePrompt?.content || "",
+      governingPrompt,
       transcriptText,
     });
 
@@ -450,7 +647,7 @@ async function runExtendedRefinementJob({ tabId, runId }) {
     try {
       await chrome.tabs.sendMessage(tabId, {
         action: "showOtterCopyToast",
-        message: "Extended refinement saved.",
+        message: pipeline.savedMessage,
       });
     } catch {
       /* The saved result remains available even if the page toast cannot be shown. */
@@ -563,21 +760,23 @@ async function assertExtendedRunNotCancelled(runId) {
 
 async function runExtendedRefinement({
   cancellationRunId,
+  pipeline = EXTENDED_PIPELINES.refinement,
   modelConfig,
   finalPassModelConfig,
   governingPrompt,
   transcriptText,
 }) {
   const trace = createExtendedDebugLog({
+    pipeline,
     modelConfig,
     finalPassModelConfig,
     transcriptText,
   });
   try {
-    const personaMatrix = await loadDirectiveFile(EXTENDED_PERSONA_MATRIX_PATH);
+    const personaMatrix = await loadDirectiveFile(pipeline.personaMatrixPath);
     const sectionResults = [];
 
-    for (const section of EXTENDED_SECTION_PIPELINE) {
+    for (const section of pipeline.sectionPipeline) {
       await assertExtendedRunNotCancelled(cancellationRunId);
       const stepDirective = await loadDirectiveFile(section.path);
       const previousSectionContext = formatPreviousSectionContext(sectionResults);
@@ -628,7 +827,7 @@ async function runExtendedRefinement({
       });
     }
 
-    const finalDirective = await loadDirectiveFile(EXTENDED_FINAL_DIRECTIVE_PATH);
+    const finalDirective = await loadDirectiveFile(pipeline.finalDirectivePath);
     await assertExtendedRunNotCancelled(cancellationRunId);
     const finalInput = formatExtendedFinalInput({
       trace,
@@ -718,8 +917,14 @@ async function saveExtendedDebugLog(trace) {
   });
 }
 
-function createExtendedDebugLog({ modelConfig, finalPassModelConfig, transcriptText }) {
+function createExtendedDebugLog({
+  pipeline = EXTENDED_PIPELINES.refinement,
+  modelConfig,
+  finalPassModelConfig,
+  transcriptText,
+}) {
   const startedAt = new Date().toISOString();
+  const sectionCount = pipeline.sectionPipeline.length;
   return {
     schemaVersion: 1,
     runId: `extended-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
@@ -730,8 +935,18 @@ function createExtendedDebugLog({ modelConfig, finalPassModelConfig, transcriptT
     totalDurationMs: 0,
     rateLimit: {
       lightweightCallDelayMs: EXTENDED_LIGHTWEIGHT_CALL_DELAY_MS,
-      expectedDefaultCallPlan:
-        "14 lightweight persona calls + optional repair calls + 1 final synthesis call + 1 objective insertion call",
+      expectedDefaultCallPlan: `${sectionCount * 2} lightweight persona calls + optional repair calls + 1 final synthesis call + 1 objective insertion call`,
+    },
+    pipeline: {
+      key: pipeline.key,
+      mode: pipeline.mode,
+      label: pipeline.label,
+      governingPromptSource: pipeline.governingPromptSource,
+      governingPromptPath: pipeline.governingPromptPath,
+      personaMatrixPath: pipeline.personaMatrixPath,
+      finalDirectivePath: pipeline.finalDirectivePath,
+      sectionNames: pipeline.sectionPipeline.map((section) => section.name),
+      sectionDirectivePaths: pipeline.sectionPipeline.map((section) => section.path),
     },
     models: {
       lightweight: summarizeModelConfig(modelConfig),
@@ -1129,6 +1344,7 @@ function formatExtendedPersonaInput({
   previousSectionContext,
   primarySectionOutput,
 }) {
+  const avoids = cleanText(persona.avoids);
   const contents = [
     "You are completing one narrowly scoped persona pass in a deterministic transcript refinement workflow.",
     "",
@@ -1156,8 +1372,7 @@ function formatExtendedPersonaInput({
     "What you produce:",
     persona.produces,
     "",
-    `What you avoid: ${persona.avoids}`,
-    "",
+    ...(avoids ? [`What you avoid: ${avoids}`, ""] : []),
     "Claim discipline:",
     formatClaimLedgerInstructions(),
     "",
@@ -1214,7 +1429,7 @@ function formatExtendedPersonaInput({
         why: persona.why,
         how: persona.how,
         produces: persona.produces,
-        avoids: persona.avoids,
+        ...(avoids ? { avoids } : {}),
       },
     },
   };
