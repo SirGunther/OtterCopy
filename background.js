@@ -11,6 +11,16 @@ const LATEST_REFINEMENT_RESULT_STORAGE_KEY = "ottercopyLatestRefinementResult";
 const EXTENDED_DEBUG_LOG_STORAGE_KEY = "ottercopyLatestExtendedDebugLog";
 const EXTENDED_DEBUG_LOG_INCLUDE_FULL_REQUESTS = false;
 const MIN_TRANSCRIPT_CHARACTER_COUNT = 100;
+const TRANSCRIPT_SEMANTIC_BLOCK_PROMPT = [
+  "Objective: Convert text into a compact semantic block: maximum reusable signal, minimum noise. Return only the block.",
+  "",
+  "Distill the transcript before any downstream model attempts synthesis.",
+  "Filter filler words, repeated starts, conversational noise, pleasantries, and low-value process chatter.",
+  "Preserve concrete names, terminology, systems, constraints, decisions, unresolved questions, and causal relationships.",
+  "Prefer terse reusable bullets or compact labeled lines over prose recap.",
+  "Do not include a preamble, title, source commentary, raw transcript excerpts, or unsupported speculation.",
+  "If the transcript is thin, return only the useful signal that is actually present.",
+].join("\n");
 const cancelledExtendedRunIds = new Set();
 const CLAIM_LEDGER_CONTRACT = Object.freeze([
   "Explicit",
@@ -476,6 +486,7 @@ async function refineTranscript({ tabId, mode }) {
   if (!transcriptResponse?.ok || !transcriptResponse.transcriptText) {
     throw new Error(transcriptResponse?.error || "No transcript text found.");
   }
+  const transcriptText = cleanText(transcriptResponse.transcriptText);
 
   const models = await globalThis.OtterCopyModelStore.getModels();
   const activeModel = globalThis.OtterCopyModelStore.getActiveModel(models);
@@ -488,18 +499,25 @@ async function refineTranscript({ tabId, mode }) {
   const activePrompt = globalThis.OtterCopyPromptStore.getActivePrompt(prompts);
 
   const isExtended = mode === "extended-refine";
+  const semanticBlock = isExtended
+    ? ""
+    : await generateTranscriptSemanticBlock({
+        modelConfig: finalPassModel,
+        transcriptText,
+      });
   const result = isExtended
     ? await runExtendedRefinement({
         modelConfig: activeModel,
         finalPassModelConfig: finalPassModel,
         governingPrompt: activePrompt?.content || "",
-        transcriptText: transcriptResponse.transcriptText,
+        transcriptText,
       })
     : await globalThis.OtterCopyModelProviderClient.generateModelContent({
         modelConfig: activeModel,
         contents: formatTranscriptForRefinement(
           activePrompt?.content || "",
-          transcriptResponse.transcriptText,
+          transcriptText,
+          semanticBlock,
         ),
       });
 
@@ -773,6 +791,12 @@ async function runExtendedRefinement({
     transcriptText,
   });
   try {
+    const semanticBlock = await generateTranscriptSemanticBlock({
+      cancellationRunId,
+      trace,
+      modelConfig: finalPassModelConfig || modelConfig,
+      transcriptText,
+    });
     const personaMatrix = await loadDirectiveFile(pipeline.personaMatrixPath);
     const sectionResults = [];
 
@@ -791,6 +815,7 @@ async function runExtendedRefinement({
         governingPrompt,
         stepDirective,
         transcriptText,
+        semanticBlock,
         previousSectionContext,
         primarySectionOutput: "",
       });
@@ -808,6 +833,7 @@ async function runExtendedRefinement({
         governingPrompt,
         stepDirective,
         transcriptText,
+        semanticBlock,
         previousSectionContext,
         primarySectionOutput: primary.text,
       });
@@ -834,6 +860,7 @@ async function runExtendedRefinement({
       governingPrompt,
       finalDirective,
       transcriptText,
+      semanticBlock,
       sectionResults,
     });
     const finalGenerated = await generateExtendedModelContent({
@@ -853,6 +880,7 @@ async function runExtendedRefinement({
       trace,
       finalArtifact: finalGenerated.result.text || "",
       transcriptText,
+      semanticBlock,
       sectionResults,
     });
     const objectiveGenerated = await generateExtendedModelContent({
@@ -935,7 +963,7 @@ function createExtendedDebugLog({
     totalDurationMs: 0,
     rateLimit: {
       lightweightCallDelayMs: EXTENDED_LIGHTWEIGHT_CALL_DELAY_MS,
-      expectedDefaultCallPlan: `${sectionCount * 2} lightweight persona calls + optional repair calls + 1 final synthesis call + 1 objective insertion call`,
+      expectedDefaultCallPlan: `1 semantic block generation call + ${sectionCount * 2} lightweight persona calls + optional repair calls + 1 final synthesis call + 1 objective insertion call`,
     },
     pipeline: {
       key: pipeline.key,
@@ -950,10 +978,16 @@ function createExtendedDebugLog({
     },
     models: {
       lightweight: summarizeModelConfig(modelConfig),
+      semanticBlock: summarizeModelConfig(finalPassModelConfig || modelConfig),
       finalPass: summarizeModelConfig(finalPassModelConfig || modelConfig),
     },
     transcript: {
       characterCount: cleanText(transcriptText).length,
+    },
+    semanticBlock: {
+      hash: "",
+      characterCount: 0,
+      preview: "",
     },
     promptLibrary: {},
     calls: [],
@@ -1102,6 +1136,38 @@ async function generateExtendedModelContent({
   }
 }
 
+async function generateTranscriptSemanticBlock({
+  cancellationRunId,
+  trace,
+  modelConfig,
+  transcriptText,
+}) {
+  const input = formatTranscriptSemanticBlockInput({ trace, transcriptText });
+  if (trace) {
+    const generated = await generateExtendedModelContent({
+      cancellationRunId,
+      trace,
+      modelConfig,
+      callType: "semantic-block",
+      sectionName: "Semantic Block",
+      passName: "Preflight",
+      role: "Transcript semantic compressor",
+      contents: input.contents,
+      debugRequest: input.debugRequest,
+    });
+    const semanticBlock = normalizeTranscriptSemanticBlock(generated.result.text || "");
+    generated.entry.normalizedResponseText = semanticBlock;
+    trace.semanticBlock = summarizeSemanticBlock(semanticBlock);
+    return semanticBlock;
+  }
+
+  const result = await globalThis.OtterCopyModelProviderClient.generateModelContent({
+    modelConfig,
+    contents: input.contents,
+  });
+  return normalizeTranscriptSemanticBlock(result && result.text);
+}
+
 async function runExtendedPersonaPass({
   cancellationRunId,
   trace,
@@ -1113,6 +1179,7 @@ async function runExtendedPersonaPass({
   governingPrompt,
   stepDirective,
   transcriptText,
+  semanticBlock,
   previousSectionContext,
   primarySectionOutput,
 }) {
@@ -1126,6 +1193,7 @@ async function runExtendedPersonaPass({
       governingPrompt,
       stepDirective,
       transcriptText,
+      semanticBlock,
       previousSectionContext,
       primarySectionOutput,
     });
@@ -1148,6 +1216,7 @@ async function runExtendedPersonaPass({
       persona,
       passName,
       transcriptText,
+      semanticBlock,
       originalResponse: generated.result && generated.result.text,
       sourceEntry: generated.entry,
     });
@@ -1176,6 +1245,7 @@ async function normalizeOrRepairExtendedPersonaResult({
   persona,
   passName,
   transcriptText,
+  semanticBlock,
   originalResponse,
   sourceEntry,
 }) {
@@ -1193,6 +1263,7 @@ async function normalizeOrRepairExtendedPersonaResult({
         persona,
         passName,
         transcriptText,
+        semanticBlock,
         originalResponse,
         formatError,
       });
@@ -1270,6 +1341,7 @@ function formatExtendedPersonaRepairInput({
   persona,
   passName,
   transcriptText,
+  semanticBlock,
   originalResponse,
   formatError,
 }) {
@@ -1287,6 +1359,9 @@ function formatExtendedPersonaRepairInput({
     "",
     "Full transcript for claim classification only:",
     cleanText(transcriptText),
+    "",
+    "Distilled transcript semantic block:",
+    cleanText(semanticBlock),
     "",
     "Return exactly this structure and include every claim label. Use `None identified.` for empty claim buckets.",
     "",
@@ -1312,6 +1387,11 @@ function formatExtendedPersonaRepairInput({
           originalResponse || "(Empty response.)",
         ),
         transcript: createDebugTextRef(trace, "Full transcript", transcriptText),
+        semanticBlock: createDebugTextRef(
+          trace,
+          "Distilled transcript semantic block",
+          semanticBlock,
+        ),
       },
       uniqueParts: {
         sectionName: section.name,
@@ -1332,6 +1412,50 @@ async function loadDirectiveFile(path) {
   return response.text();
 }
 
+function formatTranscriptSemanticBlockInput({ trace, transcriptText }) {
+  const contents = [
+    TRANSCRIPT_SEMANTIC_BLOCK_PROMPT,
+    "",
+    "Transcript:",
+    cleanText(transcriptText),
+  ].join("\n");
+
+  return {
+    contents,
+    debugRequest: trace
+      ? {
+          refs: {
+            transcript: createDebugTextRef(trace, "Full transcript", transcriptText),
+          },
+          uniqueParts: {
+            role: "Transcript semantic compressor",
+            objective: TRANSCRIPT_SEMANTIC_BLOCK_PROMPT,
+          },
+        }
+      : null,
+  };
+}
+
+function normalizeTranscriptSemanticBlock(text) {
+  const value = cleanText(text)
+    .replace(/^```(?:markdown|md|text)?\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  if (!value) {
+    throw new Error("Semantic block generation returned no usable content.");
+  }
+  return value;
+}
+
+function summarizeSemanticBlock(semanticBlock) {
+  const value = cleanText(semanticBlock);
+  return {
+    hash: createDebugTextHash(value),
+    characterCount: value.length,
+    preview: value.slice(0, 700),
+  };
+}
+
 function formatExtendedPersonaInput({
   trace,
   section,
@@ -1341,6 +1465,7 @@ function formatExtendedPersonaInput({
   governingPrompt,
   stepDirective,
   transcriptText,
+  semanticBlock,
   previousSectionContext,
   primarySectionOutput,
 }) {
@@ -1385,6 +1510,9 @@ function formatExtendedPersonaInput({
     "Full transcript:",
     cleanText(transcriptText),
     "",
+    "Distilled transcript semantic block:",
+    cleanText(semanticBlock),
+    "",
     "Return exactly this structure:",
     "The first non-whitespace text in your response must be `SECTION_OUTPUT:`. Do not start with a Markdown heading, explanation, greeting, or summary.",
     "",
@@ -1420,6 +1548,11 @@ function formatExtendedPersonaInput({
           primarySectionOutput || "(This is the primary pass.)",
         ),
         transcript: createDebugTextRef(trace, "Full transcript", transcriptText),
+        semanticBlock: createDebugTextRef(
+          trace,
+          "Distilled transcript semantic block",
+          semanticBlock,
+        ),
       },
       uniqueParts: {
         sectionName: section.name,
@@ -1440,6 +1573,7 @@ function formatExtendedFinalInput({
   governingPrompt,
   finalDirective,
   transcriptText,
+  semanticBlock,
   sectionResults,
 }) {
   const collectedSectionResults = formatCollectedSectionResults(sectionResults);
@@ -1478,6 +1612,9 @@ function formatExtendedFinalInput({
     "",
     "Full transcript:",
     cleanText(transcriptText),
+    "",
+    "Distilled transcript semantic block:",
+    cleanText(semanticBlock),
   ].join("\n");
 
   return {
@@ -1492,6 +1629,11 @@ function formatExtendedFinalInput({
           collectedSectionResults,
         ),
         transcript: createDebugTextRef(trace, "Full transcript", transcriptText),
+        semanticBlock: createDebugTextRef(
+          trace,
+          "Distilled transcript semantic block",
+          semanticBlock,
+        ),
       },
       uniqueParts: {
         role: "Final synthesis model",
@@ -1501,7 +1643,13 @@ function formatExtendedFinalInput({
   };
 }
 
-function formatObjectiveInsertionInput({ trace, finalArtifact, transcriptText, sectionResults }) {
+function formatObjectiveInsertionInput({
+  trace,
+  finalArtifact,
+  transcriptText,
+  semanticBlock,
+  sectionResults,
+}) {
   const collectedSectionResults = formatCollectedSectionResults(sectionResults);
   const contents = [
     "You are the Objective Alignment Editor for a completed engineering note.",
@@ -1526,6 +1674,9 @@ function formatObjectiveInsertionInput({ trace, finalArtifact, transcriptText, s
     "Full transcript:",
     cleanText(transcriptText),
     "",
+    "Distilled transcript semantic block:",
+    cleanText(semanticBlock),
+    "",
     "Collected section outputs and claim ledgers:",
     collectedSectionResults,
   ].join("\n");
@@ -1536,6 +1687,11 @@ function formatObjectiveInsertionInput({ trace, finalArtifact, transcriptText, s
       refs: {
         finalArtifact: createDebugTextRef(trace, "Completed final artifact before Objective", finalArtifact),
         transcript: createDebugTextRef(trace, "Full transcript", transcriptText),
+        semanticBlock: createDebugTextRef(
+          trace,
+          "Distilled transcript semantic block",
+          semanticBlock,
+        ),
         collectedSectionResults: createDebugTextRef(
           trace,
           "Collected section outputs and claim ledgers",
@@ -1632,15 +1788,17 @@ function formatCollectedSectionResults(sectionResults) {
     .join("\n\n");
 }
 
-function formatTranscriptForRefinement(refinementPrompt, transcriptText) {
+function formatTranscriptForRefinement(refinementPrompt, transcriptText, semanticBlock) {
   const prompt = cleanText(refinementPrompt);
   const transcript = cleanText(transcriptText);
+  const distilled = cleanText(semanticBlock);
+  const sections = [
+    ...(prompt ? [prompt] : []),
+    ["Transcript:", transcript].join("\n\n"),
+    ...(distilled ? [["Distilled transcript semantic block:", distilled].join("\n\n")] : []),
+  ];
 
-  if (!prompt) {
-    return transcript;
-  }
-
-  return `${prompt}\n\n---\n\nTranscript:\n\n${transcript}`;
+  return sections.join("\n\n---\n\n");
 }
 
 function cleanText(value) {

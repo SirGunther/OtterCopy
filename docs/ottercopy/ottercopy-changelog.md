@@ -10,6 +10,43 @@ Personal project changelog for extension behavior, prompt workflow changes, and 
 
 ## Session Log
 
+### 2026-06-08T01:46:42Z — OtterCopy
+
+Summary: Added first-pass transcript semantic block generation.
+
+Files / areas:
+- `background.js`
+- `docs/ottercopy/ottercopy-changelog.md`
+
+User-visible impact:
+- AI refinement now generates a compact semantic block from the transcript before downstream model synthesis.
+- The semantic block uses the configured final-pass model slot, then is appended to the downstream active-model prompt for single-pass refinement.
+- Extended refinement and engineering handoff now start with a `semantic-block` call on the final-pass model, then append that generated block to persona, repair, final synthesis, and Objective insertion prompts.
+- Extended debug logs now record the semantic-block model, generated block summary, and updated expected call plan.
+
+Tests run:
+- `node --check background.js` — syntax check passed.
+- `node --check promptStore.js` — syntax check passed.
+- `node --check popup.js` — syntax check passed.
+- `node --check content.js` — syntax check passed.
+- `node --check modelProviderClient.js` — syntax check passed.
+- Inline Node VM mocked `runExtendedRefinement(...)` — verified 17 no-repair calls for extended refinement, first call type `semantic-block`, first call uses the final-pass model, downstream persona/final/objective prompts include the block, debug metadata records the semantic-block model and call plan, and single-pass prompt formatting appends the block.
+
+Tests added/updated:
+- No persistent automated tests added; this repo still has no package/test harness. Residual risk: live provider output quality for the semantic block should be checked with a real noisy Otter transcript.
+
+Regression impact:
+- Single-pass AI refinement intentionally gains one high-performance semantic-block call before the active-model call.
+- Extended refinement intentionally changes the no-repair call plan from 16 calls to 17 calls by adding the first semantic-block call.
+- Engineering handoff receives the same semantic-block preflight and downstream prompt injection.
+- Copy-only behavior, transcript extraction, saved-result polling, cancellation, and provider adapters remain otherwise unchanged.
+
+API docs:
+- Not relevant: browser extension only; no HTTP API contract or Swagger/OpenAPI surface exists in this repo.
+
+Tooling gates:
+- No package-level lint/test/audit gates found because the repo has no `package.json`; direct syntax checks and a mocked orchestration check were run with Node.
+
 ### 2026-06-04T18:17:06Z — OtterCopy
 
 Summary: Moved Objective generation to a separate post-final insertion pass.
@@ -510,4 +547,4 @@ Tooling gates:
 
 ## Current State
 
-Extended refinement uses a seven-section paired persona pipeline with claim-ledger discipline before the final synthesis pass.
+Extended refinement uses a final-pass-model semantic-block preflight, then a seven-section paired persona pipeline with claim-ledger discipline before the final synthesis and Objective insertion passes. The same semantic block is appended to downstream prompts for single-pass refinement, extended refinement, and engineering handoff.
