@@ -12,6 +12,11 @@ const EXTENDED_DEBUG_LOG_STORAGE_KEY = "ottercopyLatestExtendedDebugLog";
 const EXTENDED_DEBUG_LOG_INCLUDE_FULL_REQUESTS = false;
 const MIN_TRANSCRIPT_CHARACTER_COUNT = 100;
 const TRANSCRIPT_SEMANTIC_BLOCK_PROMPT_PATH = "prompts/semantic-block.md";
+const POWER_AUTOMATE_NOTIFICATION_URL =
+  "https://default7318a4272f81408f83866569e958a8.70.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/" +
+  "f2a0e9254fd449419d56fe073a5c2c92/triggers/manual/paths/invoke" +
+  "?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0" +
+  "&sig=JCFHJI0-IFhMnbW8KKb_u2U5l71lGAwC9t7twob_P2E";
 const cancelledExtendedRunIds = new Set();
 const CLAIM_LEDGER_CONTRACT = Object.freeze([
   "Explicit",
@@ -652,6 +657,10 @@ async function runExtendedRefinementJob({ tabId, runId, pipeline = EXTENDED_PIPE
       refinedText: result.text || "",
       error: "",
     });
+    await sendPowerAutomateNotification({
+      status: "success",
+      message: `${pipeline.label} completed successfully.`,
+    });
 
     try {
       await chrome.tabs.sendMessage(tabId, {
@@ -676,6 +685,34 @@ async function runExtendedRefinementJob({ tabId, runId, pipeline = EXTENDED_PIPE
       completedAt: new Date().toISOString(),
       error: error.message || "Extended refinement failed.",
     });
+    await sendPowerAutomateNotification({
+      status: "fail",
+      message: `${pipeline.label} failed: ${error.message || "Extended refinement failed."}`,
+    });
+  }
+}
+
+async function sendPowerAutomateNotification({ status, message }) {
+  const payload = {
+    status: cleanText(status).toLowerCase(),
+    message: cleanText(message),
+  };
+  if (!payload.status || !payload.message) return;
+
+  try {
+    const response = await fetch(POWER_AUTOMATE_NOTIFICATION_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Notification request failed with status ${response.status}.`);
+    }
+  } catch (error) {
+    console.warn("OtterCopy: Power Automate notification failed", error);
   }
 }
 
