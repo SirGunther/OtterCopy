@@ -11,16 +11,7 @@ const LATEST_REFINEMENT_RESULT_STORAGE_KEY = "ottercopyLatestRefinementResult";
 const EXTENDED_DEBUG_LOG_STORAGE_KEY = "ottercopyLatestExtendedDebugLog";
 const EXTENDED_DEBUG_LOG_INCLUDE_FULL_REQUESTS = false;
 const MIN_TRANSCRIPT_CHARACTER_COUNT = 100;
-const TRANSCRIPT_SEMANTIC_BLOCK_PROMPT = [
-  "Objective: Convert text into a compact semantic block: maximum reusable signal, minimum noise. Return only the block.",
-  "",
-  "Distill the transcript before any downstream model attempts synthesis.",
-  "Filter filler words, repeated starts, conversational noise, pleasantries, and low-value process chatter.",
-  "Preserve concrete names, terminology, systems, constraints, decisions, unresolved questions, and causal relationships.",
-  "Prefer terse reusable bullets or compact labeled lines over prose recap.",
-  "Do not include a preamble, title, source commentary, raw transcript excerpts, or unsupported speculation.",
-  "If the transcript is thin, return only the useful signal that is actually present.",
-].join("\n");
+const TRANSCRIPT_SEMANTIC_BLOCK_PROMPT_PATH = "prompts/semantic-block.md";
 const cancelledExtendedRunIds = new Set();
 const CLAIM_LEDGER_CONTRACT = Object.freeze([
   "Explicit",
@@ -1142,7 +1133,12 @@ async function generateTranscriptSemanticBlock({
   modelConfig,
   transcriptText,
 }) {
-  const input = formatTranscriptSemanticBlockInput({ trace, transcriptText });
+  const semanticPrompt = await loadDirectiveFile(TRANSCRIPT_SEMANTIC_BLOCK_PROMPT_PATH);
+  const input = formatTranscriptSemanticBlockInput({
+    trace,
+    semanticPrompt,
+    transcriptText,
+  });
   if (trace) {
     const generated = await generateExtendedModelContent({
       cancellationRunId,
@@ -1412,9 +1408,9 @@ async function loadDirectiveFile(path) {
   return response.text();
 }
 
-function formatTranscriptSemanticBlockInput({ trace, transcriptText }) {
+function formatTranscriptSemanticBlockInput({ trace, semanticPrompt, transcriptText }) {
   const contents = [
-    TRANSCRIPT_SEMANTIC_BLOCK_PROMPT,
+    cleanText(semanticPrompt),
     "",
     "Transcript:",
     cleanText(transcriptText),
@@ -1429,7 +1425,7 @@ function formatTranscriptSemanticBlockInput({ trace, transcriptText }) {
           },
           uniqueParts: {
             role: "Transcript semantic compressor",
-            objective: TRANSCRIPT_SEMANTIC_BLOCK_PROMPT,
+            objective: cleanText(semanticPrompt),
           },
         }
       : null,
