@@ -8,6 +8,7 @@ const DEBUG_LOG_ACTION = "getExtendedDebugLog";
 const TOAST_ACTION = "showOtterCopyToast";
 
 const copyButtons = Array.from(document.querySelectorAll(".copy-action"));
+const directionInput = document.getElementById("directionInput");
 const stopRefinementButton = document.getElementById("stopRefinementButton");
 const copyLatestResultButton = document.getElementById("copyLatestResultButton");
 const copyDebugLogButton = document.getElementById("copyDebugLogButton");
@@ -85,6 +86,7 @@ async function copyFromActiveTab(mode) {
       const response = await chrome.runtime.sendMessage({
         action: mode === "extended-handoff" ? START_EXTENDED_HANDOFF_ACTION : START_EXTENDED_ACTION,
         tabId: tab.id,
+        direction: getDirection(),
       });
 
       if (!response?.ok) {
@@ -102,6 +104,7 @@ async function copyFromActiveTab(mode) {
         action: REFINE_ACTION,
         tabId: tab.id,
         mode,
+        direction: getDirection(),
       });
 
       if (!response?.ok || !response.refinedText) {
@@ -143,6 +146,10 @@ async function copyFromActiveTab(mode) {
   } finally {
     setBusy(false);
   }
+}
+
+function getDirection() {
+  return directionInput && directionInput.value ? directionInput.value.trim() : "";
 }
 
 async function copyLatestResult() {

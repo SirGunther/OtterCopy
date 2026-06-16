@@ -465,10 +465,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
-async function refineTranscript({ tabId, mode }) {
+async function refineTranscript({ tabId, mode, direction }) {
   if (!tabId) {
     throw new Error("No active tab found.");
   }
+  const userDirection = cleanText(direction);
 
   await chrome.scripting.executeScript({
     target: { tabId },
@@ -500,6 +501,7 @@ async function refineTranscript({ tabId, mode }) {
     : await generateTranscriptSemanticBlock({
         modelConfig: finalPassModel,
         transcriptText,
+        direction: userDirection,
       });
   const result = isExtended
     ? await runExtendedRefinement({
@@ -507,6 +509,7 @@ async function refineTranscript({ tabId, mode }) {
         finalPassModelConfig: finalPassModel,
         governingPrompt: activePrompt?.content || "",
         transcriptText,
+        direction: userDirection,
       })
     : await globalThis.OtterCopyModelProviderClient.generateModelContent({
         modelConfig: activeModel,
@@ -514,6 +517,7 @@ async function refineTranscript({ tabId, mode }) {
           activePrompt?.content || "",
           transcriptText,
           semanticBlock,
+          userDirection,
         ),
       });
 
@@ -545,11 +549,12 @@ function getExtendedPipeline(pipelineKey = "refinement") {
   return pipeline;
 }
 
-async function startExtendedRefinementJob({ tabId, pipelineKey = "refinement" }) {
+async function startExtendedRefinementJob({ tabId, pipelineKey = "refinement", direction }) {
   const pipeline = getExtendedPipeline(pipelineKey);
   if (!tabId) {
     throw new Error("No active tab found.");
   }
+  const userDirection = cleanText(direction);
 
   const latest = await getStoredLatestRefinementResult();
   if (latest && latest.status === "running") {
@@ -568,12 +573,13 @@ async function startExtendedRefinementJob({ tabId, pipelineKey = "refinement" })
     model: null,
     finalPassModel: null,
     prompt: null,
+    direction: userDirection,
     debugRunId: "",
     refinedText: "",
     error: "",
   });
 
-  runExtendedRefinementJob({ tabId, runId, pipeline }).catch((error) => {
+  runExtendedRefinementJob({ tabId, runId, pipeline, direction: userDirection }).catch((error) => {
     console.error(`OtterCopy: ${pipeline.label.toLowerCase()} job failed`, error);
   });
 
@@ -583,7 +589,12 @@ async function startExtendedRefinementJob({ tabId, pipelineKey = "refinement" })
   };
 }
 
-async function runExtendedRefinementJob({ tabId, runId, pipeline = EXTENDED_PIPELINES.refinement }) {
+async function runExtendedRefinementJob({
+  tabId,
+  runId,
+  pipeline = EXTENDED_PIPELINES.refinement,
+  direction = "",
+}) {
   try {
     await assertExtendedRunNotCancelled(runId);
     await chrome.scripting.executeScript({
@@ -647,6 +658,7 @@ async function runExtendedRefinementJob({ tabId, runId, pipeline = EXTENDED_PIPE
       finalPassModelConfig: finalPassModel,
       governingPrompt,
       transcriptText,
+      direction,
     });
 
     await assertExtendedRunNotCancelled(runId);
@@ -811,12 +823,15 @@ async function runExtendedRefinement({
   finalPassModelConfig,
   governingPrompt,
   transcriptText,
+  direction = "",
 }) {
+  const userDirection = cleanText(direction);
   const trace = createExtendedDebugLog({
     pipeline,
     modelConfig,
     finalPassModelConfig,
     transcriptText,
+    direction: userDirection,
   });
   try {
     const semanticBlock = await generateTranscriptSemanticBlock({
@@ -824,6 +839,7 @@ async function runExtendedRefinement({
       trace,
       modelConfig: finalPassModelConfig || modelConfig,
       transcriptText,
+      direction: userDirection,
     });
     const personaMatrix = await loadDirectiveFile(pipeline.personaMatrixPath);
     const sectionResults = [];
@@ -846,6 +862,7 @@ async function runExtendedRefinement({
         semanticBlock,
         previousSectionContext,
         primarySectionOutput: "",
+        direction: userDirection,
       });
       await waitForExtendedRateLimit(cancellationRunId);
 
@@ -864,6 +881,7 @@ async function runExtendedRefinement({
         semanticBlock,
         previousSectionContext,
         primarySectionOutput: primary.text,
+        direction: userDirection,
       });
       await waitForExtendedRateLimit(cancellationRunId);
 
@@ -890,6 +908,7 @@ async function runExtendedRefinement({
       transcriptText,
       semanticBlock,
       sectionResults,
+      direction: userDirection,
     });
     const finalGenerated = await generateExtendedModelContent({
       cancellationRunId,
@@ -910,6 +929,7 @@ async function runExtendedRefinement({
       transcriptText,
       semanticBlock,
       sectionResults,
+      direction: userDirection,
     });
     const objectiveGenerated = await generateExtendedModelContent({
       cancellationRunId,
@@ -978,9 +998,11 @@ function createExtendedDebugLog({
   modelConfig,
   finalPassModelConfig,
   transcriptText,
+  direction = "",
 }) {
   const startedAt = new Date().toISOString();
   const sectionCount = pipeline.sectionPipeline.length;
+  const userDirection = cleanText(direction);
   return {
     schemaVersion: 1,
     runId: `extended-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
@@ -1011,6 +1033,11 @@ function createExtendedDebugLog({
     },
     transcript: {
       characterCount: cleanText(transcriptText).length,
+    },
+    direction: {
+      provided: Boolean(userDirection),
+      characterCount: userDirection.length,
+      preview: userDirection.slice(0, 700),
     },
     semanticBlock: {
       hash: "",
@@ -1169,12 +1196,14 @@ async function generateTranscriptSemanticBlock({
   trace,
   modelConfig,
   transcriptText,
+  direction = "",
 }) {
   const semanticPrompt = await loadDirectiveFile(TRANSCRIPT_SEMANTIC_BLOCK_PROMPT_PATH);
   const input = formatTranscriptSemanticBlockInput({
     trace,
     semanticPrompt,
     transcriptText,
+    direction,
   });
   if (trace) {
     const generated = await generateExtendedModelContent({
@@ -1215,6 +1244,7 @@ async function runExtendedPersonaPass({
   semanticBlock,
   previousSectionContext,
   primarySectionOutput,
+  direction = "",
 }) {
   try {
     const input = formatExtendedPersonaInput({
@@ -1229,6 +1259,7 @@ async function runExtendedPersonaPass({
       semanticBlock,
       previousSectionContext,
       primarySectionOutput,
+      direction,
     });
     const generated = await generateExtendedModelContent({
       cancellationRunId,
@@ -1445,10 +1476,12 @@ async function loadDirectiveFile(path) {
   return response.text();
 }
 
-function formatTranscriptSemanticBlockInput({ trace, semanticPrompt, transcriptText }) {
+function formatTranscriptSemanticBlockInput({ trace, semanticPrompt, transcriptText, direction }) {
+  const userDirection = cleanText(direction);
   const contents = [
     cleanText(semanticPrompt),
     "",
+    ...formatUserDirectionLines(userDirection),
     "Transcript:",
     cleanText(transcriptText),
   ].join("\n");
@@ -1463,10 +1496,25 @@ function formatTranscriptSemanticBlockInput({ trace, semanticPrompt, transcriptT
           uniqueParts: {
             role: "Transcript semantic compressor",
             objective: cleanText(semanticPrompt),
+            ...(userDirection ? { userDirection } : {}),
           },
         }
       : null,
   };
+}
+
+const USER_DIRECTION_LABEL = "User direction for this run (steering guidance)";
+
+function formatUserDirectionLines(direction) {
+  const value = cleanText(direction);
+  if (!value) return [];
+  return [
+    `${USER_DIRECTION_LABEL}:`,
+    value,
+    "",
+    "Treat the user direction above as the steering intent for this run: use it to decide which topic to focus on, what to prioritize, and what to de-emphasize when the transcript spans multiple topics. It directs attention and selection only. Do not treat it as a new fact or as permission to invent content; keep every claim grounded in the transcript and honor the existing claim discipline. If the direction conflicts with the transcript, prefer the transcript and surface the tension instead of fabricating support.",
+    "",
+  ];
 }
 
 function normalizeTranscriptSemanticBlock(text) {
@@ -1501,8 +1549,10 @@ function formatExtendedPersonaInput({
   semanticBlock,
   previousSectionContext,
   primarySectionOutput,
+  direction,
 }) {
   const avoids = cleanText(persona.avoids);
+  const userDirection = cleanText(direction);
   const contents = [
     "You are completing one narrowly scoped persona pass in a deterministic transcript refinement workflow.",
     "",
@@ -1510,6 +1560,7 @@ function formatExtendedPersonaInput({
     `Pass: ${passName}`,
     `Relationship for this section: ${section.relationship}`,
     "",
+    ...formatUserDirectionLines(userDirection),
     "Full governing prompt:",
     cleanText(governingPrompt),
     "",
@@ -1596,6 +1647,7 @@ function formatExtendedPersonaInput({
         how: persona.how,
         produces: persona.produces,
         ...(avoids ? { avoids } : {}),
+        ...(userDirection ? { userDirection } : {}),
       },
     },
   };
@@ -1608,12 +1660,15 @@ function formatExtendedFinalInput({
   transcriptText,
   semanticBlock,
   sectionResults,
+  direction,
 }) {
   const collectedSectionResults = formatCollectedSectionResults(sectionResults);
+  const userDirection = cleanText(direction);
   const contents = [
     "You are completing the final consolidation pass for a transcript refinement workflow.",
     "Function as an architect, editor, and evidence reconciler.",
     "",
+    ...formatUserDirectionLines(userDirection),
     "Full governing prompt:",
     cleanText(governingPrompt),
     "",
@@ -1671,6 +1726,7 @@ function formatExtendedFinalInput({
       uniqueParts: {
         role: "Final synthesis model",
         sectionCount: sectionResults.length,
+        ...(userDirection ? { userDirection } : {}),
       },
     },
   };
@@ -1682,11 +1738,14 @@ function formatObjectiveInsertionInput({
   transcriptText,
   semanticBlock,
   sectionResults,
+  direction,
 }) {
   const collectedSectionResults = formatCollectedSectionResults(sectionResults);
+  const userDirection = cleanText(direction);
   const contents = [
     "You are the Objective Alignment Editor for a completed engineering note.",
     "",
+    ...formatUserDirectionLines(userDirection),
     "Your task is narrow:",
     "- Generate only the Objective block that should be inserted after the top-level Markdown header.",
     "- Do not rewrite, summarize, reorder, or re-output the completed note.",
@@ -1734,6 +1793,7 @@ function formatObjectiveInsertionInput({
       uniqueParts: {
         role: "Objective alignment editor",
         instruction: "Generate only the Objective block for insertion after the H1.",
+        ...(userDirection ? { userDirection } : {}),
       },
     },
   };
@@ -1821,12 +1881,14 @@ function formatCollectedSectionResults(sectionResults) {
     .join("\n\n");
 }
 
-function formatTranscriptForRefinement(refinementPrompt, transcriptText, semanticBlock) {
+function formatTranscriptForRefinement(refinementPrompt, transcriptText, semanticBlock, direction) {
   const prompt = cleanText(refinementPrompt);
   const transcript = cleanText(transcriptText);
   const distilled = cleanText(semanticBlock);
+  const directionLines = formatUserDirectionLines(direction);
   const sections = [
     ...(prompt ? [prompt] : []),
+    ...(directionLines.length ? [directionLines.join("\n").trim()] : []),
     ["Transcript:", transcript].join("\n\n"),
     ...(distilled ? [["Distilled transcript semantic block:", distilled].join("\n\n")] : []),
   ];
