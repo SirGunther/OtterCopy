@@ -5,10 +5,10 @@ const START_EXTENDED_HANDOFF_ACTION = "startExtendedHandoff";
 const STOP_EXTENDED_ACTION = "stopExtendedRefinement";
 const LATEST_RESULT_ACTION = "getLatestRefinementResult";
 const DEBUG_LOG_ACTION = "getExtendedDebugLog";
-const TOAST_ACTION = "showOtterCopyToast";
 
 const copyButtons = Array.from(document.querySelectorAll(".copy-action"));
 const directionInput = document.getElementById("directionInput");
+const directionPromptOverride = document.getElementById("directionPromptOverride");
 const stopRefinementButton = document.getElementById("stopRefinementButton");
 const copyLatestResultButton = document.getElementById("copyLatestResultButton");
 const copyDebugLogButton = document.getElementById("copyDebugLogButton");
@@ -51,6 +51,7 @@ const promptFields = {
 let modelConfigs = [];
 let promptConfigs = [];
 let latestResultPollTimer = 0;
+let latestResultState = null;
 
 copyButtons.forEach((button) => {
   button.addEventListener("click", () => copyFromActiveTab(button.dataset.mode));
@@ -87,6 +88,7 @@ async function copyFromActiveTab(mode) {
         action: mode === "extended-handoff" ? START_EXTENDED_HANDOFF_ACTION : START_EXTENDED_ACTION,
         tabId: tab.id,
         direction: getDirection(),
+        useDirectionAsPrompt: shouldUseDirectionAsPrompt(),
       });
 
       if (!response?.ok) {
@@ -105,23 +107,16 @@ async function copyFromActiveTab(mode) {
         tabId: tab.id,
         mode,
         direction: getDirection(),
+        useDirectionAsPrompt: shouldUseDirectionAsPrompt(),
       });
 
-      if (!response?.ok || !response.refinedText) {
-        throw new Error(response?.error || "AI refinement failed.");
+      if (!response?.ok) {
+        throw new Error(response?.error || "AI refinement failed to start.");
       }
 
-      await writeTextToClipboard(response.refinedText);
-      await showPageToast(
-        tab.id,
-        response.processName
-          ? `${response.processName}; copied.`
-          : response.prompt?.name
-          ? `Refined with ${response.prompt.name}; copied.`
-          : "Refined transcript copied.",
-      );
-      setStatus("Refined result copied.", "success");
-      window.setTimeout(() => window.close(), 900);
+      await refreshLatestResultSummary();
+      startLatestResultPolling();
+      setStatus("Refinement started. You can close this popup.", "success");
       return;
     }
 
@@ -152,6 +147,10 @@ function getDirection() {
   return directionInput && directionInput.value ? directionInput.value.trim() : "";
 }
 
+function shouldUseDirectionAsPrompt() {
+  return Boolean(directionPromptOverride?.checked && getDirection());
+}
+
 async function copyLatestResult() {
   setBusy(true);
   setStatus("Copying latest saved result...", "");
@@ -167,7 +166,7 @@ async function copyLatestResult() {
 
     const result = response.result;
     if (result.status === "running") {
-      throw new Error("Extended refinement is still running.");
+      throw new Error("Refinement is still running.");
     }
     if (result.status === "cancelled") {
       throw new Error("Latest refinement was stopped before completion.");
@@ -181,7 +180,7 @@ async function copyLatestResult() {
 
     await writeTextToClipboard(result.refinedText);
     setStatus("Latest result copied.", "success");
-    renderLatestResultSummary(result);
+    renderLatestResultSummary(result, { announceTransition: false });
   } catch (error) {
     setStatus(error.message || "Could not copy latest result.", "error");
     await refreshLatestResultSummary();
@@ -248,6 +247,7 @@ async function refreshLatestResultSummary() {
     if (!response?.ok || !response.result) {
       latestResultSummary.textContent = "No saved result";
       latestResultSummary.dataset.state = "";
+      latestResultState = null;
       stopLatestResultPolling();
       return;
     }
@@ -256,12 +256,14 @@ async function refreshLatestResultSummary() {
   } catch {
     latestResultSummary.textContent = "Saved result unavailable";
     latestResultSummary.dataset.state = "error";
+    latestResultState = null;
     stopLatestResultPolling();
   }
 }
 
-function renderLatestResultSummary(result) {
+function renderLatestResultSummary(result, options = {}) {
   const status = result.status || "unknown";
+  const previousState = latestResultState;
   const completed = result.completedAt ? formatTimestamp(result.completedAt) : "";
   const started = result.startedAt ? formatTimestamp(result.startedAt) : "";
   const model = result.finalPassModel?.model || result.model?.model || "";
@@ -269,10 +271,41 @@ function renderLatestResultSummary(result) {
   const details = [completed || started, model, count].filter(Boolean).join(" | ");
   latestResultSummary.textContent = `Latest result: ${status}${details ? ` | ${details}` : ""}`;
   latestResultSummary.dataset.state = status;
+  latestResultState = {
+    runId: result.runId || "",
+    status,
+  };
+
+  if (options.announceTransition !== false) {
+    announceLatestResultTransition(previousState, result);
+  }
+
   if (status === "running") {
     startLatestResultPolling();
   } else {
     stopLatestResultPolling();
+  }
+}
+
+function announceLatestResultTransition(previousState, result) {
+  const runId = result.runId || "";
+  const status = result.status || "unknown";
+  if (!previousState || previousState.runId !== runId) return;
+  if (previousState.status !== "running" || status === "running") return;
+
+  if (status === "completed") {
+    const count = result.refinedText ? ` (${result.refinedText.length} chars)` : "";
+    setStatus(`Refinement ready${count}. Use Copy latest result.`, "success");
+    return;
+  }
+
+  if (status === "failed") {
+    setStatus(result.error || "Latest refinement failed.", "error");
+    return;
+  }
+
+  if (status === "cancelled") {
+    setStatus("Latest refinement was stopped.", "error");
   }
 }
 
@@ -311,32 +344,41 @@ function getProcessLabel(mode) {
   return "Process";
 }
 
-async function showPageToast(tabId, message) {
-  try {
-    await chrome.tabs.sendMessage(tabId, {
-      action: TOAST_ACTION,
-      message,
-    });
-  } catch {
-    /* The popup status still confirms the copy if the page toast cannot be shown. */
-  }
-}
-
 async function writeTextToClipboard(text) {
+  const value = String(text || "");
+  if (!value) {
+    throw new Error("Clipboard text is empty.");
+  }
+
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch (error) {
+      console.debug("OtterCopy: popup async clipboard failed", error);
+    }
   }
 
   const textarea = document.createElement("textarea");
-  textarea.value = text;
+  textarea.value = value;
   textarea.setAttribute("readonly", "");
-  textarea.style.cssText = "position: fixed; opacity: 0; pointer-events: none;";
+  textarea.style.cssText = [
+    "position: fixed",
+    "top: 0",
+    "left: 0",
+    "width: 1px",
+    "height: 1px",
+    "opacity: 0",
+    "pointer-events: none",
+  ].join(";");
   document.body.appendChild(textarea);
+  textarea.focus();
   textarea.select();
 
   try {
-    document.execCommand("copy");
+    if (!document.execCommand("copy")) {
+      throw new Error("Clipboard write failed.");
+    }
   } finally {
     textarea.remove();
   }

@@ -452,93 +452,192 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return false;
   }
 
-  refineTranscript(message)
+  startStandardRefinementJob(message)
     .then((result) => sendResponse(result))
     .catch((error) => {
-      console.error("OtterCopy: refinement failed", error);
       sendResponse({
         ok: false,
-        error: error.message || "Transcript refinement failed.",
+        error: error.message || "Could not start transcript refinement.",
       });
     });
 
   return true;
 });
 
-async function refineTranscript({ tabId, mode, direction }) {
+async function startStandardRefinementJob({
+  tabId,
+  mode = "ai-refine",
+  direction,
+  useDirectionAsPrompt = false,
+}) {
   if (!tabId) {
     throw new Error("No active tab found.");
   }
   const userDirection = cleanText(direction);
+  const shouldOverridePrompt = Boolean(useDirectionAsPrompt && userDirection);
 
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: ["content.js"],
+  const latest = await getStoredLatestRefinementResult();
+  if (latest && latest.status === "running") {
+    throw new Error("A refinement is already running.");
+  }
+
+  const runId = `single-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  cancelledExtendedRunIds.delete(runId);
+  await saveLatestRefinementResult({
+    runId,
+    mode: mode || "ai-refine",
+    status: "running",
+    startedAt: new Date().toISOString(),
+    completedAt: "",
+    transcriptCharacterCount: 0,
+    model: null,
+    finalPassModel: null,
+    prompt: null,
+    direction: userDirection,
+    useDirectionAsPrompt: shouldOverridePrompt,
+    debugRunId: "",
+    refinedText: "",
+    error: "",
   });
 
-  const transcriptResponse = await chrome.tabs.sendMessage(tabId, {
-    action: EXTRACT_TRANSCRIPT_ACTION,
+  runStandardRefinementJob({
+    tabId,
+    runId,
+    direction: userDirection,
+    useDirectionAsPrompt: shouldOverridePrompt,
+  }).catch((error) => {
+    console.error("OtterCopy: refinement job failed", error);
   });
-
-  if (!transcriptResponse?.ok || !transcriptResponse.transcriptText) {
-    throw new Error(transcriptResponse?.error || "No transcript text found.");
-  }
-  const transcriptText = cleanText(transcriptResponse.transcriptText);
-
-  const models = await globalThis.OtterCopyModelStore.getModels();
-  const activeModel = globalThis.OtterCopyModelStore.getActiveModel(models);
-  const finalPassModel =
-    globalThis.OtterCopyModelStore.getFinalPassModel(models) || activeModel;
-  if (!activeModel) {
-    throw new Error("No active model is configured.");
-  }
-  const prompts = await globalThis.OtterCopyPromptStore.getPrompts();
-  const activePrompt = globalThis.OtterCopyPromptStore.getActivePrompt(prompts);
-
-  const isExtended = mode === "extended-refine";
-  const semanticBlock = isExtended
-    ? ""
-    : await generateTranscriptSemanticBlock({
-        modelConfig: finalPassModel,
-        transcriptText,
-        direction: userDirection,
-      });
-  const result = isExtended
-    ? await runExtendedRefinement({
-        modelConfig: activeModel,
-        finalPassModelConfig: finalPassModel,
-        governingPrompt: activePrompt?.content || "",
-        transcriptText,
-        direction: userDirection,
-      })
-    : await globalThis.OtterCopyModelProviderClient.generateModelContent({
-        modelConfig: activeModel,
-        contents: formatTranscriptForRefinement(
-          activePrompt?.content || "",
-          transcriptText,
-          semanticBlock,
-          userDirection,
-        ),
-      });
 
   return {
     ok: true,
-    model: {
-      id: activeModel.id,
-      name: activeModel.name,
-      provider: activeModel.provider,
-      adapter: activeModel.adapter,
-      model: activeModel.model,
-    },
-    prompt: activePrompt
+    runId,
+  };
+}
+
+async function runStandardRefinementJob({
+  tabId,
+  runId,
+  direction = "",
+  useDirectionAsPrompt = false,
+}) {
+  try {
+    const userDirection = cleanText(direction);
+    const shouldOverridePrompt = Boolean(useDirectionAsPrompt && userDirection);
+    await assertExtendedRunNotCancelled(runId);
+
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"],
+    });
+
+    const transcriptResponse = await chrome.tabs.sendMessage(tabId, {
+      action: EXTRACT_TRANSCRIPT_ACTION,
+    });
+
+    if (!transcriptResponse?.ok || !transcriptResponse.transcriptText) {
+      throw new Error(transcriptResponse?.error || "No transcript text found.");
+    }
+    const transcriptText = cleanText(transcriptResponse.transcriptText);
+
+    await assertExtendedRunNotCancelled(runId);
+    const models = await globalThis.OtterCopyModelStore.getModels();
+    const activeModel = globalThis.OtterCopyModelStore.getActiveModel(models);
+    const finalPassModel =
+      globalThis.OtterCopyModelStore.getFinalPassModel(models) || activeModel;
+    if (!activeModel) {
+      throw new Error("No active model is configured.");
+    }
+    const prompts = await globalThis.OtterCopyPromptStore.getPrompts();
+    const activePrompt = globalThis.OtterCopyPromptStore.getActivePrompt(prompts);
+    const governingPrompt = shouldOverridePrompt ? userDirection : activePrompt?.content || "";
+    const promptSummary = shouldOverridePrompt
+      ? {
+          id: "direction-override",
+          name: "Direction override",
+        }
+      : activePrompt
       ? {
           id: activePrompt.id,
           name: activePrompt.name,
         }
-      : null,
-    processName: isExtended ? "Extended refinement" : null,
-    refinedText: result.text,
-  };
+      : null;
+    const steeringDirection = shouldOverridePrompt ? "" : userDirection;
+
+    await mergeLatestRefinementResult(runId, {
+      transcriptCharacterCount: transcriptText.length,
+      model: summarizeModelConfig(activeModel),
+      finalPassModel: summarizeModelConfig(finalPassModel),
+      prompt: promptSummary,
+      useDirectionAsPrompt: shouldOverridePrompt,
+    });
+
+    const semanticBlock = await generateTranscriptSemanticBlock({
+      cancellationRunId: runId,
+      modelConfig: finalPassModel,
+      transcriptText,
+      direction: steeringDirection,
+    });
+    await assertExtendedRunNotCancelled(runId);
+    const result = await globalThis.OtterCopyModelProviderClient.generateModelContent({
+      modelConfig: activeModel,
+      contents: formatTranscriptForRefinement(
+        governingPrompt,
+        transcriptText,
+        semanticBlock,
+        steeringDirection,
+      ),
+    });
+    await assertExtendedRunNotCancelled(runId);
+
+    const refinedText = result.text || "";
+    if (!refinedText) {
+      throw new Error("AI refinement returned empty text.");
+    }
+
+    const savedResult = await mergeLatestRefinementResult(runId, {
+      status: "completed",
+      completedAt: new Date().toISOString(),
+      refinedText,
+      error: "",
+    });
+    if (savedResult?.status !== "completed") return;
+
+    await sendPowerAutomateNotification({
+      status: "success",
+      message: "Refinement saved successfully.",
+    });
+
+    try {
+      await chrome.tabs.sendMessage(tabId, {
+        action: "showOtterCopyToast",
+        message: promptSummary?.name
+          ? `Refined with ${promptSummary.name}; saved.`
+          : "Refined transcript saved.",
+      });
+    } catch {
+      /* The saved result remains available if the page is gone. */
+    }
+  } catch (error) {
+    if (error && error.isExtendedCancellation) {
+      await mergeLatestRefinementResult(runId, {
+        status: "cancelled",
+        completedAt: new Date().toISOString(),
+        error: "Refinement stopped by user.",
+      });
+      return;
+    }
+
+    await mergeLatestRefinementResult(runId, {
+      status: "failed",
+      completedAt: new Date().toISOString(),
+      error: error.message || "Transcript refinement failed.",
+    });
+    await sendPowerAutomateNotification({
+      status: "fail",
+      message: `Refinement failed: ${error.message || "Transcript refinement failed."}`,
+    });
+  }
 }
 
 function getExtendedPipeline(pipelineKey = "refinement") {
@@ -549,12 +648,18 @@ function getExtendedPipeline(pipelineKey = "refinement") {
   return pipeline;
 }
 
-async function startExtendedRefinementJob({ tabId, pipelineKey = "refinement", direction }) {
+async function startExtendedRefinementJob({
+  tabId,
+  pipelineKey = "refinement",
+  direction,
+  useDirectionAsPrompt = false,
+}) {
   const pipeline = getExtendedPipeline(pipelineKey);
   if (!tabId) {
     throw new Error("No active tab found.");
   }
   const userDirection = cleanText(direction);
+  const shouldOverridePrompt = Boolean(useDirectionAsPrompt && userDirection);
 
   const latest = await getStoredLatestRefinementResult();
   if (latest && latest.status === "running") {
@@ -574,12 +679,19 @@ async function startExtendedRefinementJob({ tabId, pipelineKey = "refinement", d
     finalPassModel: null,
     prompt: null,
     direction: userDirection,
+    useDirectionAsPrompt: shouldOverridePrompt,
     debugRunId: "",
     refinedText: "",
     error: "",
   });
 
-  runExtendedRefinementJob({ tabId, runId, pipeline, direction: userDirection }).catch((error) => {
+  runExtendedRefinementJob({
+    tabId,
+    runId,
+    pipeline,
+    direction: userDirection,
+    useDirectionAsPrompt: shouldOverridePrompt,
+  }).catch((error) => {
     console.error(`OtterCopy: ${pipeline.label.toLowerCase()} job failed`, error);
   });
 
@@ -594,6 +706,7 @@ async function runExtendedRefinementJob({
   runId,
   pipeline = EXTENDED_PIPELINES.refinement,
   direction = "",
+  useDirectionAsPrompt = false,
 }) {
   try {
     await assertExtendedRunNotCancelled(runId);
@@ -628,7 +741,14 @@ async function runExtendedRefinementJob({
 
     let activePrompt = null;
     let governingPrompt = "";
-    if (pipeline.governingPromptSource === "file") {
+    const promptOverride = cleanText(direction);
+    if (useDirectionAsPrompt && promptOverride) {
+      governingPrompt = promptOverride;
+      activePrompt = {
+        id: "direction-override",
+        name: "Direction override",
+      };
+    } else if (pipeline.governingPromptSource === "file") {
       governingPrompt = await loadDirectiveFile(pipeline.governingPromptPath);
       activePrompt = {
         id: pipeline.key,
@@ -649,6 +769,7 @@ async function runExtendedRefinementJob({
             name: activePrompt.name,
           }
         : null,
+      useDirectionAsPrompt: Boolean(useDirectionAsPrompt && promptOverride),
     });
 
     const result = await runExtendedRefinement({
@@ -658,7 +779,8 @@ async function runExtendedRefinementJob({
       finalPassModelConfig: finalPassModel,
       governingPrompt,
       transcriptText,
-      direction,
+      direction: useDirectionAsPrompt ? "" : direction,
+      promptOverrideText: useDirectionAsPrompt ? promptOverride : "",
     });
 
     await assertExtendedRunNotCancelled(runId);
@@ -733,7 +855,7 @@ async function stopExtendedRefinementJob() {
   if (!latest || latest.status !== "running") {
     return {
       ok: false,
-      error: "No extended refinement is currently running.",
+      error: "No refinement is currently running.",
     };
   }
 
@@ -742,7 +864,7 @@ async function stopExtendedRefinementJob() {
     ...latest,
     status: "cancelled",
     completedAt: new Date().toISOString(),
-    error: "Extended refinement stopped by user. Any in-flight provider response will be ignored.",
+    error: "Refinement stopped by user. Any in-flight provider response will be ignored.",
   });
 
   return {
@@ -824,6 +946,7 @@ async function runExtendedRefinement({
   governingPrompt,
   transcriptText,
   direction = "",
+  promptOverrideText = "",
 }) {
   const userDirection = cleanText(direction);
   const trace = createExtendedDebugLog({
@@ -832,6 +955,7 @@ async function runExtendedRefinement({
     finalPassModelConfig,
     transcriptText,
     direction: userDirection,
+    promptOverrideText,
   });
   try {
     const semanticBlock = await generateTranscriptSemanticBlock({
@@ -999,10 +1123,12 @@ function createExtendedDebugLog({
   finalPassModelConfig,
   transcriptText,
   direction = "",
+  promptOverrideText = "",
 }) {
   const startedAt = new Date().toISOString();
   const sectionCount = pipeline.sectionPipeline.length;
   const userDirection = cleanText(direction);
+  const promptOverride = cleanText(promptOverrideText);
   return {
     schemaVersion: 1,
     runId: `extended-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
@@ -1038,6 +1164,11 @@ function createExtendedDebugLog({
       provided: Boolean(userDirection),
       characterCount: userDirection.length,
       preview: userDirection.slice(0, 700),
+    },
+    promptOverride: {
+      provided: Boolean(promptOverride),
+      characterCount: promptOverride.length,
+      preview: promptOverride.slice(0, 700),
     },
     semanticBlock: {
       hash: "",

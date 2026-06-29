@@ -168,6 +168,15 @@ button:disabled {
   outline: none;
 }
 
+.direction-override-field {
+  color: #334e68;
+  font-size: 12px;
+}
+
+.direction-override-field input {
+  margin: 0;
+}
+
 .result-summary {
   color: #52616f;
   font-size: 11px;

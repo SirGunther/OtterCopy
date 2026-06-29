@@ -3,7 +3,13 @@
   "name": "OtterCopy",
   "version": "1.0.0",
   "description": "Copy the transcript from the current transcript page.",
-  "permissions": ["activeTab", "clipboardWrite", "scripting", "storage", "unlimitedStorage"],
+  "permissions": [
+    "activeTab",
+    "clipboardWrite",
+    "scripting",
+    "storage",
+    "unlimitedStorage"
+  ],
   "host_permissions": [
     "https://api.groq.com/*",
     "https://api.openai.com/*",
