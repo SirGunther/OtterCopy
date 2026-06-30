@@ -128,6 +128,68 @@ button:disabled {
   opacity: 0.72;
 }
 
+.refine-controls {
+  align-items: end;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.refine-type-field {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 4px;
+  font-weight: 700;
+  min-width: 0;
+}
+
+.refine-type-field span {
+  font-size: 12px;
+}
+
+.refine-type-field select {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #1f2933;
+  min-height: 34px;
+  padding: 6px 8px;
+  width: 100%;
+}
+
+.refine-type-field select:focus {
+  border-color: #1769aa;
+  outline: none;
+}
+
+.extended-toggle-field {
+  flex: 0 0 auto;
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+.secondary-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.compact-action {
+  flex: 1 1 0;
+  font-size: 12px;
+  font-weight: 700;
+  min-height: 28px;
+  width: auto;
+}
+
+.settings-tools {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-tools .debug-action {
+  font-size: 12px;
+  min-height: 30px;
+}
+
 #status {
   min-height: 18px;
   margin: 0;

@@ -27,7 +27,7 @@ const CLAIM_LEDGER_CONTRACT = Object.freeze([
 ]);
 const EXTENDED_LIGHTWEIGHT_CALL_DELAY_MS = 4200;
 const EXTENDED_PERSONA_MATRIX_PATH = "prompts/personalities/matrix.md";
-const HANDOFF_GOVERNING_PROMPT_PATH = "prompts/handoff.md";
+const HANDOFF_GOVERNING_PROMPT_PATH = "prompts/custom/handoff.md";
 const HANDOFF_PERSONA_MATRIX_PATH = "prompts/personalities/handoffmatrix.md";
 const EXTENDED_SECTION_PIPELINE = Object.freeze([
   {
@@ -467,6 +467,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 async function startStandardRefinementJob({
   tabId,
   mode = "ai-refine",
+  promptId = "",
   direction,
   useDirectionAsPrompt = false,
 }) {
@@ -503,6 +504,7 @@ async function startStandardRefinementJob({
   runStandardRefinementJob({
     tabId,
     runId,
+    promptId,
     direction: userDirection,
     useDirectionAsPrompt: shouldOverridePrompt,
   }).catch((error) => {
@@ -518,6 +520,7 @@ async function startStandardRefinementJob({
 async function runStandardRefinementJob({
   tabId,
   runId,
+  promptId = "",
   direction = "",
   useDirectionAsPrompt = false,
 }) {
@@ -549,7 +552,11 @@ async function runStandardRefinementJob({
       throw new Error("No active model is configured.");
     }
     const prompts = await globalThis.OtterCopyPromptStore.getPrompts();
-    const activePrompt = globalThis.OtterCopyPromptStore.getActivePrompt(prompts);
+    // The popup passes the prompt chosen in the Type dropdown; fall back to the
+    // active prompt when none is supplied (legacy callers, direction override).
+    const selectedPrompt =
+      (promptId && prompts.find((prompt) => prompt.id === promptId)) || null;
+    const activePrompt = selectedPrompt || globalThis.OtterCopyPromptStore.getActivePrompt(prompts);
     const governingPrompt = shouldOverridePrompt ? userDirection : activePrompt?.content || "";
     const promptSummary = shouldOverridePrompt
       ? {

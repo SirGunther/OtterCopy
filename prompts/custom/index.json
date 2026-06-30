@@ -1,0 +1,6 @@
+[
+  { "id": "prompt-refinement", "name": "Refinement", "file": "prompts/custom/refinement.md", "order": 1 },
+  { "id": "prompt-summary",    "name": "Summary",    "file": "prompts/custom/summary.md",    "order": 2 },
+  { "id": "prompt-variables",  "name": "Variables",  "file": "prompts/custom/variables.md",  "order": 3 },
+  { "id": "prompt-handoff",    "name": "Handoff",    "file": "prompts/custom/handoff.md",    "order": 4 }
+]

@@ -30,27 +30,34 @@
         <span>Use direction as the only prompt</span>
       </label>
 
-      <button class="copy-action" type="button" data-mode="exact">
-        Copy exact transcript
-      </button>
-      <button class="copy-action ai-action" type="button" data-mode="ai-refine">
+      <div class="refine-controls">
+        <label class="refine-type-field">
+          <span>Type</span>
+          <select id="refineType"></select>
+        </label>
+        <label class="checkbox-field extended-toggle-field">
+          <input id="extendedToggle" type="checkbox">
+          <span>Extended review</span>
+        </label>
+      </div>
+
+      <button id="refineButton" class="primary-action ai-action" type="button">
         Refine and copy
       </button>
-      <button class="copy-action extended-action" type="button" data-mode="extended-refine">
-        Extended refine and copy
+      <button class="copy-action exact-action" type="button" data-mode="exact">
+        Copy exact transcript
       </button>
-      <button class="copy-action handoff-action" type="button" data-mode="extended-handoff">
-        Engineering handoff
-      </button>
-      <button id="stopRefinementButton" class="stop-action" type="button">
-        Stop refinement
-      </button>
-      <button id="copyLatestResultButton" class="saved-result-action" type="button">
-        Copy latest result
-      </button>
-      <button id="copyDebugLogButton" class="debug-action" type="button">
-        Copy latest debug log
-      </button>
+
+      <div class="secondary-actions">
+        <button id="copyLatestResultButton" class="compact-action saved-result-action" type="button"
+          title="Copy latest result">
+          ⧉ Latest result
+        </button>
+        <button id="stopRefinementButton" class="compact-action stop-action" type="button"
+          title="Stop refinement">
+          ◼ Stop
+        </button>
+      </div>
       <p id="latestResultSummary" class="result-summary">No saved result</p>
       <p id="status" role="status" aria-live="polite"></p>
 
@@ -63,6 +70,13 @@
         </div>
 
         <p id="modelSettingsStatus" class="settings-status" role="status" aria-live="polite"></p>
+
+        <div class="settings-tools">
+          <button id="copyDebugLogButton" class="debug-action" type="button">
+            Copy latest debug log
+          </button>
+        </div>
+
         <div id="modelList" class="model-list"></div>
 
         <form id="modelForm" class="model-form">

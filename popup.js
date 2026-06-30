@@ -5,8 +5,19 @@ const START_EXTENDED_HANDOFF_ACTION = "startExtendedHandoff";
 const STOP_EXTENDED_ACTION = "stopExtendedRefinement";
 const LATEST_RESULT_ACTION = "getLatestRefinementResult";
 const DEBUG_LOG_ACTION = "getExtendedDebugLog";
+const UI_PREFS_KEY = "ottercopy:ui:refine";
+
+// Only these prompts have an extended (multi-pass persona chain) pipeline; the
+// Extended toggle is enabled solely for them. All other prompts are single-pass.
+const EXTENDED_PIPELINE_BY_PROMPT_ID = {
+  "prompt-refinement": "refinement",
+  "prompt-handoff": "handoff",
+};
 
 const copyButtons = Array.from(document.querySelectorAll(".copy-action"));
+const refineButton = document.getElementById("refineButton");
+const refineType = document.getElementById("refineType");
+const extendedToggle = document.getElementById("extendedToggle");
 const directionInput = document.getElementById("directionInput");
 const directionPromptOverride = document.getElementById("directionPromptOverride");
 const stopRefinementButton = document.getElementById("stopRefinementButton");
@@ -56,6 +67,12 @@ let latestResultState = null;
 copyButtons.forEach((button) => {
   button.addEventListener("click", () => copyFromActiveTab(button.dataset.mode));
 });
+refineButton.addEventListener("click", runRefine);
+refineType.addEventListener("change", () => {
+  updateExtendedGating();
+  saveUiPrefs();
+});
+extendedToggle.addEventListener("change", saveUiPrefs);
 stopRefinementButton.addEventListener("click", stopRefinement);
 copyLatestResultButton.addEventListener("click", copyLatestResult);
 copyDebugLogButton.addEventListener("click", copyLatestDebugLog);
@@ -66,10 +83,80 @@ modelForm.addEventListener("submit", saveModel);
 cancelPromptEditButton.addEventListener("click", () => resetPromptForm());
 promptForm.addEventListener("submit", savePrompt);
 
-initializeSettings();
+initializeSettings().then(loadUiPrefs);
 refreshLatestResultSummary();
 
-async function copyFromActiveTab(mode) {
+// Build the Type dropdown from the whole prompt library (built-ins + custom),
+// preserving the current selection when possible.
+function populateRefineTypes() {
+  const previous = refineType.value;
+  refineType.innerHTML = "";
+  promptConfigs.forEach((prompt) => {
+    const option = document.createElement("option");
+    option.value = prompt.id;
+    option.textContent = prompt.name;
+    refineType.appendChild(option);
+  });
+  if (previous && promptConfigs.some((prompt) => prompt.id === previous)) {
+    refineType.value = previous;
+  }
+  updateExtendedGating();
+}
+
+// The Extended toggle only applies to prompts that have an extended pipeline.
+function updateExtendedGating() {
+  const capable = Boolean(EXTENDED_PIPELINE_BY_PROMPT_ID[refineType.value]);
+  extendedToggle.disabled = !capable;
+  if (!capable) {
+    extendedToggle.checked = false;
+  }
+}
+
+// Dispatch through the existing copy/refine paths. Extended-capable prompt with
+// the toggle on -> its multi-pass pipeline; otherwise a single-pass refine using
+// the selected prompt id.
+function runRefine() {
+  const promptId = refineType.value;
+  const pipeline = EXTENDED_PIPELINE_BY_PROMPT_ID[promptId];
+  if (pipeline && extendedToggle.checked) {
+    const mode = pipeline === "handoff" ? "extended-handoff" : "extended-refine";
+    copyFromActiveTab(mode);
+  } else {
+    copyFromActiveTab("ai-refine", promptId);
+  }
+}
+
+function loadUiPrefs() {
+  try {
+    chrome.storage.sync.get(UI_PREFS_KEY, (data) => {
+      const prefs = (data && data[UI_PREFS_KEY]) || {};
+      if (prefs.promptId && promptConfigs.some((prompt) => prompt.id === prefs.promptId)) {
+        refineType.value = prefs.promptId;
+      }
+      updateExtendedGating();
+      if (!extendedToggle.disabled) {
+        extendedToggle.checked = Boolean(prefs.extended);
+      }
+    });
+  } catch (error) {
+    console.debug("OtterCopy: could not load UI prefs", error);
+  }
+}
+
+function saveUiPrefs() {
+  try {
+    chrome.storage.sync.set({
+      [UI_PREFS_KEY]: {
+        promptId: refineType.value,
+        extended: extendedToggle.checked,
+      },
+    });
+  } catch (error) {
+    console.debug("OtterCopy: could not save UI prefs", error);
+  }
+}
+
+async function copyFromActiveTab(mode, promptId = "") {
   setBusy(true);
   setStatus(getBusyStatus(mode), "");
 
@@ -106,6 +193,7 @@ async function copyFromActiveTab(mode) {
         action: REFINE_ACTION,
         tabId: tab.id,
         mode,
+        promptId,
         direction: getDirection(),
         useDirectionAsPrompt: shouldUseDirectionAsPrompt(),
       });
@@ -388,6 +476,7 @@ async function initializeSettings() {
   try {
     modelConfigs = await window.OtterCopyModelStore.getModels();
     promptConfigs = await window.OtterCopyPromptStore.getPrompts();
+    populateRefineTypes();
     renderActiveModelSummary();
     renderFinalPassModelSummary();
     renderActivePromptSummary();
@@ -568,6 +657,7 @@ async function saveModel(event) {
 
 function renderPromptList() {
   promptList.replaceChildren();
+  populateRefineTypes();
 
   if (promptConfigs.length === 0) {
     const empty = document.createElement("p");
@@ -593,7 +683,7 @@ function renderPromptList() {
     const meta = document.createElement("span");
     meta.textContent = prompt.builtIn
       ? `Built-in | ${prompt.sourcePath || "packaged prompt"}`
-      : "Custom prompt | stored locally";
+      : "Custom prompt | synced";
 
     main.appendChild(name);
     main.appendChild(meta);
@@ -797,6 +887,7 @@ function setBusy(isBusy) {
   copyButtons.forEach((button) => {
     button.disabled = isBusy;
   });
+  refineButton.disabled = isBusy;
   stopRefinementButton.disabled = isBusy;
   copyLatestResultButton.disabled = isBusy;
   copyDebugLogButton.disabled = isBusy;
