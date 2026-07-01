@@ -6,6 +6,10 @@ const STOP_EXTENDED_ACTION = "stopExtendedRefinement";
 const LATEST_RESULT_ACTION = "getLatestRefinementResult";
 const DEBUG_LOG_ACTION = "getExtendedDebugLog";
 const UI_PREFS_KEY = "ottercopy:ui:refine";
+// Failure-recovery snapshot of the inputs behind the latest refine attempt.
+// Written on run-start, restored on reopen when that run failed/cancelled, and
+// cleared on success. Device-local because it can hold a large manual transcript.
+const LAST_ATTEMPT_KEY = "ottercopy:ui:lastAttempt";
 
 // Only these prompts have an extended (multi-pass persona chain) pipeline; the
 // Extended toggle is enabled solely for them. All other prompts are single-pass.
@@ -20,6 +24,8 @@ const refineType = document.getElementById("refineType");
 const extendedToggle = document.getElementById("extendedToggle");
 const directionInput = document.getElementById("directionInput");
 const directionPromptOverride = document.getElementById("directionPromptOverride");
+const manualTranscriptInput = document.getElementById("manualTranscriptInput");
+const manualTranscriptOverride = document.getElementById("manualTranscriptOverride");
 const stopRefinementButton = document.getElementById("stopRefinementButton");
 const copyLatestResultButton = document.getElementById("copyLatestResultButton");
 const copyDebugLogButton = document.getElementById("copyDebugLogButton");
@@ -83,7 +89,12 @@ modelForm.addEventListener("submit", saveModel);
 cancelPromptEditButton.addEventListener("click", () => resetPromptForm());
 promptForm.addEventListener("submit", savePrompt);
 
-initializeSettings().then(loadUiPrefs);
+initializeSettings().then(async () => {
+  // A failed/cancelled attempt restores its own inputs (incl. promptId/extended);
+  // only fall back to generic UI prefs on the happy path.
+  const restored = await restoreLastAttemptIfNeeded();
+  if (!restored) loadUiPrefs();
+});
 refreshLatestResultSummary();
 
 // Build the Type dropdown from the whole prompt library (built-ins + custom),
@@ -156,6 +167,103 @@ function saveUiPrefs() {
   }
 }
 
+function getLocalStorage(key) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(key, (data) => resolve((data && data[key]) || null));
+    } catch (error) {
+      console.debug("OtterCopy: could not read local storage", error);
+      resolve(null);
+    }
+  });
+}
+
+function setLocalStorage(key, value) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.set({ [key]: value }, () => resolve());
+    } catch (error) {
+      console.debug("OtterCopy: could not write local storage", error);
+      resolve();
+    }
+  });
+}
+
+function removeLocalStorage(key) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.remove(key, () => resolve());
+    } catch (error) {
+      console.debug("OtterCopy: could not clear local storage", error);
+      resolve();
+    }
+  });
+}
+
+// Snapshot every input feeding a refine attempt, keyed to its runId, so a later
+// failure/cancel can rebuild the exact attempt for the user to retry.
+function saveLastAttemptSnapshot(runId) {
+  if (!runId) return Promise.resolve();
+  return setLocalStorage(LAST_ATTEMPT_KEY, {
+    runId,
+    inputs: {
+      promptId: refineType.value,
+      extended: extendedToggle.checked,
+      direction: getDirection(),
+      directionAsPrompt: Boolean(directionPromptOverride?.checked),
+      manualTranscript: getManualTranscript(),
+      manualAsOnlySource: getManualAsOnlySource(),
+    },
+  });
+}
+
+function clearLastAttemptSnapshot() {
+  return removeLocalStorage(LAST_ATTEMPT_KEY);
+}
+
+// On reopen, rebuild the inputs iff the snapshot's run failed or was cancelled;
+// clear it on success. Returns true when it restored (so init skips loadUiPrefs).
+async function restoreLastAttemptIfNeeded() {
+  const snapshot = await getLocalStorage(LAST_ATTEMPT_KEY);
+  if (!snapshot || !snapshot.inputs) return false;
+
+  let result = null;
+  try {
+    const response = await chrome.runtime.sendMessage({ action: LATEST_RESULT_ACTION });
+    result = response?.ok ? response.result : null;
+  } catch {
+    result = null;
+  }
+
+  const status = result?.status;
+  const sameRun = result && snapshot.runId && result.runId === snapshot.runId;
+
+  if (sameRun && (status === "failed" || status === "cancelled")) {
+    const inputs = snapshot.inputs;
+    if (inputs.promptId && promptConfigs.some((prompt) => prompt.id === inputs.promptId)) {
+      refineType.value = inputs.promptId;
+    }
+    updateExtendedGating();
+    if (!extendedToggle.disabled) {
+      extendedToggle.checked = Boolean(inputs.extended);
+    }
+    if (directionInput) directionInput.value = inputs.direction || "";
+    if (directionPromptOverride) directionPromptOverride.checked = Boolean(inputs.directionAsPrompt);
+    if (manualTranscriptInput) manualTranscriptInput.value = inputs.manualTranscript || "";
+    if (manualTranscriptOverride) {
+      manualTranscriptOverride.checked = Boolean(inputs.manualAsOnlySource);
+    }
+    const label = status === "cancelled" ? "Last attempt was stopped" : "Last attempt failed";
+    setStatus(`${label}: ${result.error || "adjust and try again."}`, "error");
+    return true;
+  }
+
+  if (!result || status === "completed" || !sameRun) {
+    await clearLastAttemptSnapshot();
+  }
+  return false;
+}
+
 async function copyFromActiveTab(mode, promptId = "") {
   setBusy(true);
   setStatus(getBusyStatus(mode), "");
@@ -176,12 +284,15 @@ async function copyFromActiveTab(mode, promptId = "") {
         tabId: tab.id,
         direction: getDirection(),
         useDirectionAsPrompt: shouldUseDirectionAsPrompt(),
+        manualTranscript: getManualTranscript(),
+        manualTranscriptAsOnlySource: getManualAsOnlySource(),
       });
 
       if (!response?.ok) {
         throw new Error(response?.error || `${getProcessLabel(mode)} failed to start.`);
       }
 
+      await saveLastAttemptSnapshot(response.runId);
       await refreshLatestResultSummary();
       startLatestResultPolling();
       setStatus(`${getProcessLabel(mode)} started. You can close this popup.`, "success");
@@ -196,12 +307,15 @@ async function copyFromActiveTab(mode, promptId = "") {
         promptId,
         direction: getDirection(),
         useDirectionAsPrompt: shouldUseDirectionAsPrompt(),
+        manualTranscript: getManualTranscript(),
+        manualTranscriptAsOnlySource: getManualAsOnlySource(),
       });
 
       if (!response?.ok) {
         throw new Error(response?.error || "AI refinement failed to start.");
       }
 
+      await saveLastAttemptSnapshot(response.runId);
       await refreshLatestResultSummary();
       startLatestResultPolling();
       setStatus("Refinement started. You can close this popup.", "success");
@@ -237,6 +351,19 @@ function getDirection() {
 
 function shouldUseDirectionAsPrompt() {
   return Boolean(directionPromptOverride?.checked && getDirection());
+}
+
+function getManualTranscript() {
+  return manualTranscriptInput && manualTranscriptInput.value
+    ? manualTranscriptInput.value.trim()
+    : "";
+}
+
+// Raw checkbox state. The background derives supplement (append) vs override
+// (replace) from this plus whether any manual text was actually pasted, so the
+// popup must not pre-collapse the two.
+function getManualAsOnlySource() {
+  return Boolean(manualTranscriptOverride?.checked);
 }
 
 async function copyLatestResult() {
@@ -382,6 +509,9 @@ function announceLatestResultTransition(previousState, result) {
   if (previousState.status !== "running" || status === "running") return;
 
   if (status === "completed") {
+    // Happy path reached while the popup stayed open: drop the failure snapshot
+    // so a later reopen starts fresh.
+    clearLastAttemptSnapshot();
     const count = result.refinedText ? ` (${result.refinedText.length} chars)` : "";
     setStatus(`Refinement ready${count}. Use Copy latest result.`, "success");
     return;

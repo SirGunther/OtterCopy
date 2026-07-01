@@ -11,6 +11,11 @@ const LATEST_REFINEMENT_RESULT_STORAGE_KEY = "ottercopyLatestRefinementResult";
 const EXTENDED_DEBUG_LOG_STORAGE_KEY = "ottercopyLatestExtendedDebugLog";
 const EXTENDED_DEBUG_LOG_INCLUDE_FULL_REQUESTS = false;
 const MIN_TRANSCRIPT_CHARACTER_COUNT = 100;
+// The content scraper's last-resort "container" fallback can grab generic page
+// chrome rather than a transcript. Require a higher floor before trusting it, so
+// a wrong/unloaded page fails loudly instead of sending junk to the model.
+const CONTAINER_FALLBACK_MIN_CHARACTER_COUNT = 400;
+const MANUAL_SUPPLEMENT_SEPARATOR = "----- Additional pasted transcript (manual) -----";
 const TRANSCRIPT_SEMANTIC_BLOCK_PROMPT_PATH = "prompts/semantic-block.md";
 const POWER_AUTOMATE_NOTIFICATION_URL =
   "https://default7318a4272f81408f83866569e958a8.70.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/" +
@@ -387,6 +392,73 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.action.setBadgeText({ text: "" });
 });
 
+// A running result older than this is treated as orphaned (worker died without
+// finishing) rather than as an active job, so it never permanently blocks runs.
+const STALE_RUNNING_RESULT_MS = 15 * 60 * 1000;
+
+// Keep the MV3 service worker alive while a refinement job runs. Extended jobs
+// chain ~17 model calls with multi-second gaps; without this, Chrome's 30s idle
+// reaper can terminate the worker between calls, abandoning the job before it
+// records a terminal status or fires its notification.
+let activeJobCount = 0;
+let keepAliveTimer = null;
+
+function startKeepAlive() {
+  activeJobCount += 1;
+  if (keepAliveTimer) return;
+  keepAliveTimer = setInterval(() => {
+    // A trivial async API call resets the idle timer.
+    chrome.runtime.getPlatformInfo(() => {});
+  }, 20000);
+}
+
+function stopKeepAlive() {
+  activeJobCount = Math.max(0, activeJobCount - 1);
+  if (activeJobCount === 0 && keepAliveTimer) {
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
+  }
+}
+
+// A fresh service-worker start means any job that was mid-flight is gone (its
+// async context died with the previous worker). If the stored result is still
+// "running", mark it failed and notify once so the user is not left waiting and
+// the "already running" guard does not block the next run. Patching by the
+// orphan's own runId makes this safe against a job that just started.
+async function recoverOrphanedRun() {
+  try {
+    const current = await getStoredLatestRefinementResult();
+    if (!current || current.status !== "running") return;
+
+    const recovered = await mergeLatestRefinementResult(current.runId, {
+      status: "failed",
+      completedAt: new Date().toISOString(),
+      error: "Refinement interrupted before completion (extension worker stopped).",
+    });
+    if (recovered?.status === "failed") {
+      await sendPowerAutomateNotification({
+        status: "fail",
+        message: "Refinement interrupted before completion (extension worker stopped).",
+      });
+    }
+  } catch (error) {
+    console.warn("OtterCopy: orphaned-run recovery failed", error);
+  }
+}
+
+recoverOrphanedRun();
+
+// True only for a "running" result recent enough to plausibly still be active.
+// A stale running result (worker died without finishing and without a restart
+// to trigger recovery) is treated as not active so the user is never
+// permanently blocked from starting a new refinement.
+function isRunningResultActive(latest) {
+  if (!latest || latest.status !== "running") return false;
+  const startedAt = Date.parse(latest.startedAt);
+  if (!Number.isFinite(startedAt)) return true;
+  return Date.now() - startedAt < STALE_RUNNING_RESULT_MS;
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.action === START_EXTENDED_REFINEMENT_ACTION) {
     startExtendedRefinementJob({ ...message, pipelineKey: "refinement" })
@@ -464,21 +536,100 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
+// Pasted text drives one of three modes: "off" (Otter only), "supplement"
+// (Otter transcript + appended paste), or "override" (paste is the only source).
+function deriveManualTranscriptMode(manualTranscript, manualAsOnlySource) {
+  const manualText = cleanText(manualTranscript);
+  if (!manualText) return "off";
+  return manualAsOnlySource ? "override" : "supplement";
+}
+
+// Validates an Otter-sourced transcript before it reaches the model. A bare
+// non-empty check is insufficient: the scraper's last-resort container fallback
+// can return generic page chrome, and the standard path had no floor at all —
+// both let a junk/near-empty "transcript" through (model then replies asking for
+// input). Returns the cleaned text or throws.
+function assertUsableOtterTranscript(text, method) {
+  const value = cleanText(text);
+  const noTranscriptError =
+    "No usable transcript found on this page. Open a loaded Otter transcript, " +
+    "or paste one and check 'use as the only source'.";
+  if (!value || method === "none") {
+    throw new Error(noTranscriptError);
+  }
+  if (method === "container" && value.length < CONTAINER_FALLBACK_MIN_CHARACTER_COUNT) {
+    throw new Error(noTranscriptError);
+  }
+  if (value.length < MIN_TRANSCRIPT_CHARACTER_COUNT) {
+    throw new Error(
+      `Transcript is too short to refine (${value.length} characters found; minimum is ${MIN_TRANSCRIPT_CHARACTER_COUNT}). Make sure an Otter transcript is open and loaded.`,
+    );
+  }
+  return value;
+}
+
+async function fetchOtterTranscript(tabId) {
+  if (!tabId) {
+    throw new Error("No active tab found.");
+  }
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["content.js"],
+  });
+
+  const transcriptResponse = await chrome.tabs.sendMessage(tabId, {
+    action: EXTRACT_TRANSCRIPT_ACTION,
+  });
+
+  if (!transcriptResponse?.ok || !transcriptResponse.transcriptText) {
+    throw new Error(transcriptResponse?.error || "No transcript text found.");
+  }
+
+  return assertUsableOtterTranscript(transcriptResponse.transcriptText, transcriptResponse.method);
+}
+
+// Single transcript-ingestion seam. Override returns the pasted text alone (no
+// content.js injection, no active-tab dependency). Supplement appends the paste
+// to a validated Otter transcript (no silent fallback — a missing/unusable Otter
+// transcript fails the run). Off is the unchanged Otter-only path.
+async function resolveTranscript({
+  tabId,
+  manualTranscript = "",
+  manualAsOnlySource = false,
+}) {
+  const manualText = cleanText(manualTranscript);
+  const mode = deriveManualTranscriptMode(manualTranscript, manualAsOnlySource);
+
+  if (mode === "override") {
+    return manualText;
+  }
+
+  const otterText = await fetchOtterTranscript(tabId);
+  if (mode === "supplement") {
+    return `${otterText}\n\n${MANUAL_SUPPLEMENT_SEPARATOR}\n\n${manualText}`;
+  }
+  return otterText;
+}
+
 async function startStandardRefinementJob({
   tabId,
   mode = "ai-refine",
   promptId = "",
   direction,
   useDirectionAsPrompt = false,
+  manualTranscript = "",
+  manualTranscriptAsOnlySource = false,
 }) {
-  if (!tabId) {
+  const manualMode = deriveManualTranscriptMode(manualTranscript, manualTranscriptAsOnlySource);
+  if (!tabId && manualMode !== "override") {
     throw new Error("No active tab found.");
   }
   const userDirection = cleanText(direction);
   const shouldOverridePrompt = Boolean(useDirectionAsPrompt && userDirection);
 
   const latest = await getStoredLatestRefinementResult();
-  if (latest && latest.status === "running") {
+  if (isRunningResultActive(latest)) {
     throw new Error("A refinement is already running.");
   }
 
@@ -496,6 +647,7 @@ async function startStandardRefinementJob({
     prompt: null,
     direction: userDirection,
     useDirectionAsPrompt: shouldOverridePrompt,
+    manualTranscriptMode: manualMode,
     debugRunId: "",
     refinedText: "",
     error: "",
@@ -507,6 +659,8 @@ async function startStandardRefinementJob({
     promptId,
     direction: userDirection,
     useDirectionAsPrompt: shouldOverridePrompt,
+    manualTranscript,
+    manualTranscriptAsOnlySource,
   }).catch((error) => {
     console.error("OtterCopy: refinement job failed", error);
   });
@@ -523,25 +677,20 @@ async function runStandardRefinementJob({
   promptId = "",
   direction = "",
   useDirectionAsPrompt = false,
+  manualTranscript = "",
+  manualTranscriptAsOnlySource = false,
 }) {
+  startKeepAlive();
   try {
     const userDirection = cleanText(direction);
     const shouldOverridePrompt = Boolean(useDirectionAsPrompt && userDirection);
     await assertExtendedRunNotCancelled(runId);
 
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["content.js"],
+    const transcriptText = await resolveTranscript({
+      tabId,
+      manualTranscript,
+      manualAsOnlySource: manualTranscriptAsOnlySource,
     });
-
-    const transcriptResponse = await chrome.tabs.sendMessage(tabId, {
-      action: EXTRACT_TRANSCRIPT_ACTION,
-    });
-
-    if (!transcriptResponse?.ok || !transcriptResponse.transcriptText) {
-      throw new Error(transcriptResponse?.error || "No transcript text found.");
-    }
-    const transcriptText = cleanText(transcriptResponse.transcriptText);
 
     await assertExtendedRunNotCancelled(runId);
     const models = await globalThis.OtterCopyModelStore.getModels();
@@ -644,6 +793,8 @@ async function runStandardRefinementJob({
       status: "fail",
       message: `Refinement failed: ${error.message || "Transcript refinement failed."}`,
     });
+  } finally {
+    stopKeepAlive();
   }
 }
 
@@ -660,16 +811,19 @@ async function startExtendedRefinementJob({
   pipelineKey = "refinement",
   direction,
   useDirectionAsPrompt = false,
+  manualTranscript = "",
+  manualTranscriptAsOnlySource = false,
 }) {
   const pipeline = getExtendedPipeline(pipelineKey);
-  if (!tabId) {
+  const manualMode = deriveManualTranscriptMode(manualTranscript, manualTranscriptAsOnlySource);
+  if (!tabId && manualMode !== "override") {
     throw new Error("No active tab found.");
   }
   const userDirection = cleanText(direction);
   const shouldOverridePrompt = Boolean(useDirectionAsPrompt && userDirection);
 
   const latest = await getStoredLatestRefinementResult();
-  if (latest && latest.status === "running") {
+  if (isRunningResultActive(latest)) {
     throw new Error("An extended refinement is already running.");
   }
 
@@ -687,6 +841,7 @@ async function startExtendedRefinementJob({
     prompt: null,
     direction: userDirection,
     useDirectionAsPrompt: shouldOverridePrompt,
+    manualTranscriptMode: manualMode,
     debugRunId: "",
     refinedText: "",
     error: "",
@@ -698,6 +853,8 @@ async function startExtendedRefinementJob({
     pipeline,
     direction: userDirection,
     useDirectionAsPrompt: shouldOverridePrompt,
+    manualTranscript,
+    manualTranscriptAsOnlySource,
   }).catch((error) => {
     console.error(`OtterCopy: ${pipeline.label.toLowerCase()} job failed`, error);
   });
@@ -714,26 +871,29 @@ async function runExtendedRefinementJob({
   pipeline = EXTENDED_PIPELINES.refinement,
   direction = "",
   useDirectionAsPrompt = false,
+  manualTranscript = "",
+  manualTranscriptAsOnlySource = false,
 }) {
+  startKeepAlive();
   try {
     await assertExtendedRunNotCancelled(runId);
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["content.js"],
+
+    const manualMode = deriveManualTranscriptMode(manualTranscript, manualTranscriptAsOnlySource);
+    const transcriptText = await resolveTranscript({
+      tabId,
+      manualTranscript,
+      manualAsOnlySource: manualTranscriptAsOnlySource,
     });
-
-    const transcriptResponse = await chrome.tabs.sendMessage(tabId, {
-      action: EXTRACT_TRANSCRIPT_ACTION,
-    });
-
-    if (!transcriptResponse?.ok || !transcriptResponse.transcriptText) {
-      throw new Error(transcriptResponse?.error || "No transcript text found.");
-    }
-
-    const transcriptText = cleanText(transcriptResponse.transcriptText);
+    // The resolved text still gets a floor: Otter-sourced text is already
+    // validated in fetchOtterTranscript, but an override supplies unvalidated
+    // pasted text, and the extended chain needs enough material to work with.
     if (transcriptText.length < MIN_TRANSCRIPT_CHARACTER_COUNT) {
+      const sourceHint =
+        manualMode === "override"
+          ? "Paste a longer transcript."
+          : "Make sure an Otter transcript is open and loaded.";
       throw new Error(
-        `Transcript is too short to refine (${transcriptText.length} characters found; minimum is ${MIN_TRANSCRIPT_CHARACTER_COUNT}). Make sure an Otter transcript is open and loaded.`,
+        `Transcript is too short to refine (${transcriptText.length} characters found; minimum is ${MIN_TRANSCRIPT_CHARACTER_COUNT}). ${sourceHint}`,
       );
     }
 
@@ -830,6 +990,8 @@ async function runExtendedRefinementJob({
       status: "fail",
       message: `${pipeline.label} failed: ${error.message || "Extended refinement failed."}`,
     });
+  } finally {
+    stopKeepAlive();
   }
 }
 

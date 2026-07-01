@@ -239,6 +239,52 @@ button:disabled {
   margin: 0;
 }
 
+.manual-transcript-field {
+  display: grid;
+  gap: 4px;
+  font-weight: 700;
+}
+
+.manual-transcript-field span {
+  font-size: 12px;
+}
+
+.manual-transcript-field textarea {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #1f2933;
+  font-weight: 400;
+  min-height: 56px;
+  padding: 6px 8px;
+  resize: vertical;
+  width: 100%;
+}
+
+.manual-transcript-field textarea:focus {
+  border-color: #1769aa;
+  outline: none;
+}
+
+.manual-transcript-override-field {
+  color: #334e68;
+  font-size: 12px;
+}
+
+.manual-transcript-override-field input {
+  margin: 0;
+}
+
+/* Armed-state affordance: make it obvious the Otter.ai page is being bypassed. */
+.manual-transcript-override-field:has(input:checked) {
+  color: #92400e;
+  font-weight: 700;
+}
+
+.manual-transcript-field:has(~ .manual-transcript-override-field input:checked) textarea {
+  border-color: #d97706;
+  background: #fffbeb;
+}
+
 .result-summary {
   color: #52616f;
   font-size: 11px;

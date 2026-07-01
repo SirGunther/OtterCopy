@@ -30,6 +30,16 @@
         <span>Use direction as the only prompt</span>
       </label>
 
+      <label class="manual-transcript-field">
+        <span>Manual transcript (optional)</span>
+        <textarea id="manualTranscriptInput" rows="3" spellcheck="false"
+          placeholder="Paste a transcript here. Appended to the Otter.ai transcript by default; check below to use it as the only source."></textarea>
+      </label>
+      <label class="checkbox-field manual-transcript-override-field">
+        <input id="manualTranscriptOverride" type="checkbox">
+        <span>Use pasted transcript as the only source (skip Otter.ai)</span>
+      </label>
+
       <div class="refine-controls">
         <label class="refine-type-field">
           <span>Type</span>

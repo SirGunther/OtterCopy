@@ -1,4 +1,9 @@
 (() => {
+  // Practical ceiling for a single model call. Chrome terminates an MV3 service
+  // worker around the 5-minute mark for one in-flight request, so a longer
+  // timeout cannot be honored here; >5 min would require an offscreen document.
+  const DEFAULT_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+
   function normalizeString(value) {
     return String(value == null ? "" : value)
       .trim()
@@ -10,6 +15,26 @@
     error.statusCode = statusCode;
     Object.assign(error, extras);
     return error;
+  }
+
+  // fetch with an AbortController-based timeout so a hung provider fails loudly
+  // instead of waiting forever (which would let the worker die silently).
+  async function fetchWithTimeout(url, options, timeoutMs) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        throw createProviderError(
+          504,
+          `Model request timed out after ${Math.round(timeoutMs / 1000)}s.`,
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   function resolveModelApiKey(modelConfig = {}) {
@@ -144,16 +169,20 @@
     return fallback;
   }
 
-  async function generateWithOpenAiCompatible({ apiKey, modelConfig, contents, config }) {
-    const response = await fetch(toOpenAiCompatibleEndpoint(modelConfig), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        ...toHeaderMap(modelConfig && modelConfig.headers),
+  async function generateWithOpenAiCompatible({ apiKey, modelConfig, contents, config, timeoutMs }) {
+    const response = await fetchWithTimeout(
+      toOpenAiCompatibleEndpoint(modelConfig),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          ...toHeaderMap(modelConfig && modelConfig.headers),
+        },
+        body: JSON.stringify(buildOpenAiCompatiblePayload({ modelConfig, contents, config })),
       },
-      body: JSON.stringify(buildOpenAiCompatiblePayload({ modelConfig, contents, config })),
-    });
+      timeoutMs,
+    );
     const body = await readResponseJson(response);
 
     if (!response.ok) {
@@ -183,15 +212,19 @@
     };
   }
 
-  async function generateWithGoogleGenAi({ apiKey, modelConfig, contents, config }) {
-    const response = await fetch(`${toGoogleGenerateContentEndpoint(modelConfig)}?key=${apiKey}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...toHeaderMap(modelConfig && modelConfig.headers),
+  async function generateWithGoogleGenAi({ apiKey, modelConfig, contents, config, timeoutMs }) {
+    const response = await fetchWithTimeout(
+      `${toGoogleGenerateContentEndpoint(modelConfig)}?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...toHeaderMap(modelConfig && modelConfig.headers),
+        },
+        body: JSON.stringify(buildGoogleGenerateContentPayload({ modelConfig, contents, config })),
       },
-      body: JSON.stringify(buildGoogleGenerateContentPayload({ modelConfig, contents, config })),
-    });
+      timeoutMs,
+    );
     const body = await readResponseJson(response);
 
     if (!response.ok) {
@@ -217,7 +250,12 @@
     };
   }
 
-  async function generateModelContent({ modelConfig, contents, config } = {}) {
+  async function generateModelContent({
+    modelConfig,
+    contents,
+    config,
+    timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  } = {}) {
     if (!modelConfig || typeof modelConfig !== "object") {
       throw createProviderError(500, "Model configuration is missing.");
     }
@@ -239,6 +277,7 @@
         modelConfig,
         contents,
         config,
+        timeoutMs,
       });
     }
 
@@ -248,6 +287,7 @@
         modelConfig,
         contents,
         config,
+        timeoutMs,
       });
     }
 

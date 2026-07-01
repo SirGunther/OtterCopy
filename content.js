@@ -37,11 +37,16 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.action === EXTRACT_ACTION) {
-      const transcriptText = extractTranscriptText();
+      const extraction = extractTranscriptText();
       sendResponse(
-        transcriptText
-          ? { ok: true, transcriptText }
-          : { ok: false, error: "No transcript text found." },
+        extraction.text
+          ? {
+              ok: true,
+              transcriptText: extraction.text,
+              method: extraction.method,
+              lineCount: extraction.lineCount,
+            }
+          : { ok: false, error: "No transcript text found.", method: extraction.method },
       );
       return false;
     }
@@ -66,7 +71,7 @@
   });
 
   async function copyTranscript(options = {}) {
-    const transcriptText = extractTranscriptText();
+    const transcriptText = extractTranscriptText().text;
 
     if (!transcriptText) {
       showToast("No transcript text found.");
@@ -104,19 +109,23 @@
     return `${prompt}\n\n---\n\nTranscript:\n\n${transcriptText}`;
   }
 
+  // Returns { text, method, lineCount }. `method` reports which strategy
+  // produced the text so the background can judge confidence: the structured
+  // sentence strategies are high-confidence; "container" is the last-resort
+  // fallback that can grab generic page chrome and needs a stricter bar.
   function extractTranscriptText() {
     const exactSentenceNodes = getTopLevelElements(
       visibleElements(document.querySelectorAll(SELECTORS.exactSentence)),
     );
     if (exactSentenceNodes.length > 0) {
-      return cleanTranscriptLines(exactSentenceNodes.map(extractSentenceText));
+      return buildExtraction(exactSentenceNodes.map(extractSentenceText), "sentences");
     }
 
     const contentBodyNodes = getTopLevelElements(
       visibleElements(document.querySelectorAll(SELECTORS.contentBody)),
     );
     if (contentBodyNodes.length > 0) {
-      return cleanTranscriptLines(contentBodyNodes.map(extractSentenceText));
+      return buildExtraction(contentBodyNodes.map(extractSentenceText), "contentBody");
     }
 
     const looseSentenceNodes = getTopLevelElements(
@@ -125,7 +134,7 @@
       ),
     );
     if (looseSentenceNodes.length > 0) {
-      return cleanTranscriptLines(looseSentenceNodes.map(extractSentenceText));
+      return buildExtraction(looseSentenceNodes.map(extractSentenceText), "loose");
     }
 
     const transcriptContainers = visibleElements(
@@ -133,10 +142,24 @@
     );
     const bestContainer = findBestTranscriptContainer(transcriptContainers);
     if (bestContainer) {
-      return cleanText(bestContainer.innerText || bestContainer.textContent);
+      const text = cleanText(bestContainer.innerText || bestContainer.textContent);
+      return {
+        text,
+        method: "container",
+        lineCount: text ? text.split(/\n+/).filter(Boolean).length : 0,
+      };
     }
 
-    return "";
+    return { text: "", method: "none", lineCount: 0 };
+  }
+
+  function buildExtraction(lines, method) {
+    const text = cleanTranscriptLines(lines);
+    return {
+      text,
+      method,
+      lineCount: text ? text.split("\n").filter(Boolean).length : 0,
+    };
   }
 
   function extractSentenceText(element) {
