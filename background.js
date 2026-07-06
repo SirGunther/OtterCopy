@@ -1,4 +1,4 @@
-importScripts("modelStore.js", "promptStore.js", "modelProviderClient.js");
+importScripts("modelStore.js", "promptStore.js", "modelProviderClient.js", "providerStore.js");
 
 const EXTRACT_TRANSCRIPT_ACTION = "extractTranscript";
 const REFINE_TRANSCRIPT_ACTION = "refineTranscript";
@@ -693,10 +693,7 @@ async function runStandardRefinementJob({
     });
 
     await assertExtendedRunNotCancelled(runId);
-    const models = await globalThis.OtterCopyModelStore.getModels();
-    const activeModel = globalThis.OtterCopyModelStore.getActiveModel(models);
-    const finalPassModel =
-      globalThis.OtterCopyModelStore.getFinalPassModel(models) || activeModel;
+    const { activeModel, finalPassModel } = await resolveActiveModels();
     if (!activeModel) {
       throw new Error("No active model is configured.");
     }
@@ -898,10 +895,7 @@ async function runExtendedRefinementJob({
     }
 
     await assertExtendedRunNotCancelled(runId);
-    const models = await globalThis.OtterCopyModelStore.getModels();
-    const activeModel = globalThis.OtterCopyModelStore.getActiveModel(models);
-    const finalPassModel =
-      globalThis.OtterCopyModelStore.getFinalPassModel(models) || activeModel;
+    const { activeModel, finalPassModel } = await resolveActiveModels();
     if (!activeModel) {
       throw new Error("No active model is configured.");
     }
@@ -1357,6 +1351,44 @@ function computeTraceDurationMs(trace) {
   const completed = Date.parse(trace.completedAt);
   if (!Number.isFinite(started) || !Number.isFinite(completed)) return 0;
   return Math.max(0, completed - started);
+}
+
+// Fill a model's credentials from its linked provider, with the model's own values
+// winning when present (the per-model override). Returns a shallow clone; callers
+// pass the enriched config downstream so summaries + provider calls agree on the key.
+function applyProviderCredentials(model, providers) {
+  if (!model) return model;
+  const providerId = model.providerId ? String(model.providerId).trim() : "";
+  if (!providerId || !globalThis.OtterCopyProviderStore) return model;
+
+  const provider = globalThis.OtterCopyProviderStore.getProvider(providers, providerId);
+  if (!provider) return model;
+
+  const ownHeaders = model.headers && typeof model.headers === "object" ? model.headers : {};
+  return {
+    ...model,
+    apiKey: model.apiKey || provider.apiKey || "",
+    baseUrl: model.baseUrl || provider.baseUrl || "",
+    headers: Object.keys(ownHeaders).length > 0 ? ownHeaders : provider.headers || ownHeaders,
+  };
+}
+
+// Single choke point for both refine paths: resolve the active + final-pass models
+// and enrich them with provider credentials before anything runs or is summarized.
+async function resolveActiveModels() {
+  if (globalThis.OtterCopyProviderStore) {
+    await globalThis.OtterCopyProviderStore.migrateFromModelsIfNeeded();
+  }
+  const models = await globalThis.OtterCopyModelStore.getModels();
+  const providers = globalThis.OtterCopyProviderStore
+    ? await globalThis.OtterCopyProviderStore.getProviders()
+    : [];
+  const rawActive = globalThis.OtterCopyModelStore.getActiveModel(models);
+  const rawFinalPass = globalThis.OtterCopyModelStore.getFinalPassModel(models) || rawActive;
+  return {
+    activeModel: applyProviderCredentials(rawActive, providers),
+    finalPassModel: applyProviderCredentials(rawFinalPass, providers),
+  };
 }
 
 function summarizeModelConfig(modelConfig = {}) {

@@ -9,10 +9,18 @@
   <body>
     <main class="popup">
       <header class="popup-header">
-        <div>
+        <div class="header-main">
           <h1>OtterCopy</h1>
-          <p id="activeModelSummary">No model selected</p>
-          <p id="finalPassModelSummary">Final pass: active model</p>
+          <div class="model-pickers">
+            <label class="model-picker-field">
+              <span>Active</span>
+              <select id="activeModelPicker" title="Active model"></select>
+            </label>
+            <label class="model-picker-field">
+              <span>Final pass</span>
+              <select id="finalPassModelPicker" title="Final pass model"></select>
+            </label>
+          </div>
           <p id="activePromptSummary">No prompt selected</p>
         </div>
         <button id="modelSettingsButton" class="icon-button" type="button" title="Model settings">
@@ -85,6 +93,53 @@
           <button id="copyDebugLogButton" class="debug-action" type="button">
             Copy latest debug log
           </button>
+          <button id="exportConfigButton" class="debug-action" type="button">
+            Export configs
+          </button>
+          <button id="importConfigButton" class="debug-action" type="button">
+            Import configs
+          </button>
+          <input id="importConfigInput" type="file" accept="application/json,.json" hidden>
+        </div>
+
+        <div class="settings-header">
+          <h2>API Providers</h2>
+        </div>
+        <p class="settings-hint">
+          Store one key per provider. Models linked to a provider inherit its key unless
+          they set their own.
+        </p>
+        <p id="providerSettingsStatus" class="settings-status" role="status" aria-live="polite"></p>
+        <div id="providerList" class="model-list"></div>
+
+        <form id="providerForm" class="model-form">
+          <input id="providerId" type="hidden">
+
+          <label>
+            <span>Provider name</span>
+            <input id="providerName" type="text" required placeholder="google">
+          </label>
+
+          <label>
+            <span>API key</span>
+            <input id="providerApiKey" type="password" placeholder="Shared by all models on this provider">
+          </label>
+
+          <label>
+            <span>Base URL</span>
+            <input id="providerBaseUrl" type="url" placeholder="Optional default endpoint">
+          </label>
+
+          <div class="form-actions">
+            <button id="saveProviderButton" type="submit">Save provider</button>
+            <button id="cancelProviderEditButton" class="secondary" type="button">New provider</button>
+          </div>
+        </form>
+
+        <div class="settings-divider"></div>
+
+        <div class="settings-header">
+          <h2>Models</h2>
         </div>
 
         <div id="modelList" class="model-list"></div>
@@ -116,8 +171,15 @@
           </label>
 
           <label>
-            <span>API key</span>
-            <input id="modelApiKey" type="password" placeholder="Stored locally in this browser">
+            <span>Linked provider</span>
+            <select id="modelProviderId">
+              <option value="">None (use key below)</option>
+            </select>
+          </label>
+
+          <label>
+            <span>API key (optional override)</span>
+            <input id="modelApiKey" type="password" placeholder="Leave blank to inherit the provider key">
           </label>
 
           <label>
@@ -188,6 +250,7 @@
 
     <script src="modelStore.js"></script>
     <script src="promptStore.js"></script>
+    <script src="providerStore.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

@@ -5,6 +5,7 @@
     id: "model-google-gemma-4-31b-it",
     name: "Gemma 4 31B (Google)",
     provider: "google",
+    providerId: "",
     adapter: "google-genai",
     model: "gemma-4-31b-it",
     apiKey: "",
@@ -67,6 +68,8 @@
       id: normalizeString(model && model.id) || (index === 0 ? DEFAULT_MODEL.id : createId()),
       name: normalizeString(model && model.name) || modelName || base.name || "AI model",
       provider,
+      // Optional link to a provider-level credential record; empty = self-contained key.
+      providerId: normalizeString(model && model.providerId),
       adapter,
       model: modelName,
       apiKey: normalizeString(model && model.apiKey),
@@ -265,6 +268,7 @@
     getActiveModel,
     getFinalPassModel,
     getModels,
+    saveModels,
     upsertModel,
   };
 })();

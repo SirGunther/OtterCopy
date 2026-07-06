@@ -41,16 +41,49 @@ h2 {
   line-height: 1.2;
 }
 
-#activeModelSummary,
-#finalPassModelSummary,
 #activePromptSummary {
   color: #52616f;
   font-size: 11px;
-  margin-top: 2px;
+  margin-top: 6px;
   max-width: 210px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.header-main {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Top-level API selection: quick Active / Final-pass switching without opening settings. */
+.model-pickers {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.model-picker-field {
+  align-items: center;
+  color: #52616f;
+  display: grid;
+  font-size: 11px;
+  gap: 6px;
+  grid-template-columns: 60px 1fr;
+}
+
+.model-picker-field select {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #1f2933;
+  min-width: 0;
+  padding: 3px 6px;
+  width: 100%;
+}
+
+.model-picker-field select:disabled {
+  background: #f5f7fa;
+  color: #9aa5b1;
 }
 
 button,
@@ -191,9 +224,15 @@ button:disabled {
 }
 
 #status {
-  min-height: 18px;
+  /* Reserve a fixed 2-line box so status text changing/wrapping never reflows the grid. */
+  height: 37px;
+  line-height: 1.4;
   margin: 0;
   color: #52616f;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 #status[data-state="error"] {
@@ -288,7 +327,14 @@ button:disabled {
 .result-summary {
   color: #52616f;
   font-size: 11px;
-  min-height: 16px;
+  /* Reserve a fixed 2-line box so the summary text (short "No saved result" -> long
+     "Latest result: completed | ..." string) can never grow and bump the layout. */
+  height: 31px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 .result-summary[data-state="completed"] {
@@ -331,6 +377,12 @@ button:disabled {
 .settings-status {
   color: #52616f;
   min-height: 18px;
+}
+
+.settings-hint {
+  color: #6b7684;
+  font-size: 11px;
+  margin: 0;
 }
 
 .settings-status[data-state="error"] {

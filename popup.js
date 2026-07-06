@@ -31,8 +31,8 @@ const copyLatestResultButton = document.getElementById("copyLatestResultButton")
 const copyDebugLogButton = document.getElementById("copyDebugLogButton");
 const latestResultSummary = document.getElementById("latestResultSummary");
 const statusEl = document.getElementById("status");
-const activeModelSummary = document.getElementById("activeModelSummary");
-const finalPassModelSummary = document.getElementById("finalPassModelSummary");
+const activeModelPicker = document.getElementById("activeModelPicker");
+const finalPassModelPicker = document.getElementById("finalPassModelPicker");
 const activePromptSummary = document.getElementById("activePromptSummary");
 const modelSettingsButton = document.getElementById("modelSettingsButton");
 const closeModelSettingsButton = document.getElementById("closeModelSettingsButton");
@@ -41,6 +41,13 @@ const modelSettingsStatus = document.getElementById("modelSettingsStatus");
 const modelList = document.getElementById("modelList");
 const modelForm = document.getElementById("modelForm");
 const cancelModelEditButton = document.getElementById("cancelModelEditButton");
+const exportConfigButton = document.getElementById("exportConfigButton");
+const importConfigButton = document.getElementById("importConfigButton");
+const importConfigInput = document.getElementById("importConfigInput");
+const providerSettingsStatus = document.getElementById("providerSettingsStatus");
+const providerList = document.getElementById("providerList");
+const providerForm = document.getElementById("providerForm");
+const cancelProviderEditButton = document.getElementById("cancelProviderEditButton");
 const promptSettingsStatus = document.getElementById("promptSettingsStatus");
 const promptList = document.getElementById("promptList");
 const promptForm = document.getElementById("promptForm");
@@ -49,6 +56,7 @@ const modelFields = {
   id: document.getElementById("modelId"),
   name: document.getElementById("modelName"),
   provider: document.getElementById("modelProvider"),
+  providerId: document.getElementById("modelProviderId"),
   adapter: document.getElementById("modelAdapter"),
   model: document.getElementById("modelNameId"),
   apiKey: document.getElementById("modelApiKey"),
@@ -57,6 +65,12 @@ const modelFields = {
   options: document.getElementById("modelOptions"),
   active: document.getElementById("modelActive"),
   finalPassActive: document.getElementById("modelFinalPassActive"),
+};
+const providerFields = {
+  id: document.getElementById("providerId"),
+  name: document.getElementById("providerName"),
+  apiKey: document.getElementById("providerApiKey"),
+  baseUrl: document.getElementById("providerBaseUrl"),
 };
 const promptFields = {
   id: document.getElementById("promptId"),
@@ -67,6 +81,7 @@ const promptFields = {
 
 let modelConfigs = [];
 let promptConfigs = [];
+let providerConfigs = [];
 let latestResultPollTimer = 0;
 let latestResultState = null;
 
@@ -84,8 +99,20 @@ copyLatestResultButton.addEventListener("click", copyLatestResult);
 copyDebugLogButton.addEventListener("click", copyLatestDebugLog);
 modelSettingsButton.addEventListener("click", openModelSettings);
 closeModelSettingsButton.addEventListener("click", closeModelSettings);
+activeModelPicker.addEventListener("change", onActivePickerChange);
+finalPassModelPicker.addEventListener("change", onFinalPassPickerChange);
 cancelModelEditButton.addEventListener("click", () => resetModelForm());
 modelForm.addEventListener("submit", saveModel);
+cancelProviderEditButton.addEventListener("click", () => resetProviderForm());
+providerForm.addEventListener("submit", saveProvider);
+exportConfigButton.addEventListener("click", exportConfig);
+importConfigButton.addEventListener("click", () => importConfigInput.click());
+importConfigInput.addEventListener("change", (event) => {
+  const file = event.target.files && event.target.files[0];
+  if (file) importConfigFromFile(file);
+  // Reset so re-selecting the same file fires change again.
+  event.target.value = "";
+});
 cancelPromptEditButton.addEventListener("click", () => resetPromptForm());
 promptForm.addEventListener("submit", savePrompt);
 
@@ -604,15 +631,15 @@ async function writeTextToClipboard(text) {
 
 async function initializeSettings() {
   try {
+    await window.OtterCopyProviderStore.migrateFromModelsIfNeeded();
     modelConfigs = await window.OtterCopyModelStore.getModels();
     promptConfigs = await window.OtterCopyPromptStore.getPrompts();
+    providerConfigs = await window.OtterCopyProviderStore.getProviders();
     populateRefineTypes();
-    renderActiveModelSummary();
-    renderFinalPassModelSummary();
+    renderModelPickers();
     renderActivePromptSummary();
   } catch (error) {
-    activeModelSummary.textContent = "Settings unavailable";
-    finalPassModelSummary.textContent = "Final pass unavailable";
+    disableModelPickers("Settings unavailable");
     activePromptSummary.textContent = error.message || "Settings unavailable";
   }
 }
@@ -622,13 +649,16 @@ async function openModelSettings() {
   setModelSettingsStatus("Loading models...", "");
 
   try {
+    await window.OtterCopyProviderStore.migrateFromModelsIfNeeded();
     modelConfigs = await window.OtterCopyModelStore.getModels();
     promptConfigs = await window.OtterCopyPromptStore.getPrompts();
-    renderActiveModelSummary();
-    renderFinalPassModelSummary();
+    providerConfigs = await window.OtterCopyProviderStore.getProviders();
+    renderModelPickers();
     renderActivePromptSummary();
+    renderProviderList();
     renderModelList();
     renderPromptList();
+    resetProviderForm();
     resetModelForm();
     resetPromptForm();
     setModelSettingsStatus("", "");
@@ -641,18 +671,42 @@ function closeModelSettings() {
   modelSettingsPanel.classList.add("hidden");
 }
 
-function renderActiveModelSummary() {
+// Empty value = final pass follows the active model (clearFinalPassModel state).
+const FINAL_PASS_SAME_AS_ACTIVE = "";
+
+// Top-level API selection. Both header selects list every saved model; the final-pass
+// select adds a leading "Same as active model" option mapping to the cleared state.
+function renderModelPickers() {
   const activeModel = window.OtterCopyModelStore.getActiveModel(modelConfigs);
-  activeModelSummary.textContent = activeModel
-    ? `Active: ${activeModel.name} (${activeModel.model})`
-    : "No active model";
+  const finalPassModel = window.OtterCopyModelStore.getFinalPassModel(modelConfigs);
+
+  activeModelPicker.replaceChildren();
+  finalPassModelPicker.replaceChildren();
+
+  if (modelConfigs.length === 0) {
+    disableModelPickers("No models configured");
+    return;
+  }
+
+  activeModelPicker.disabled = false;
+  finalPassModelPicker.disabled = false;
+  finalPassModelPicker.appendChild(new Option("Same as active model", FINAL_PASS_SAME_AS_ACTIVE));
+
+  modelConfigs.forEach((model) => {
+    const label = `${model.name} (${model.model})`;
+    activeModelPicker.appendChild(new Option(label, model.id));
+    finalPassModelPicker.appendChild(new Option(label, model.id));
+  });
+
+  activeModelPicker.value = activeModel ? activeModel.id : "";
+  finalPassModelPicker.value = finalPassModel ? finalPassModel.id : FINAL_PASS_SAME_AS_ACTIVE;
 }
 
-function renderFinalPassModelSummary() {
-  const finalPassModel = window.OtterCopyModelStore.getFinalPassModel(modelConfigs);
-  finalPassModelSummary.textContent = finalPassModel
-    ? `Final pass: ${finalPassModel.name} (${finalPassModel.model})`
-    : "Final pass: active model";
+function disableModelPickers(message) {
+  activeModelPicker.replaceChildren(new Option(message, ""));
+  finalPassModelPicker.replaceChildren(new Option(message, ""));
+  activeModelPicker.disabled = true;
+  finalPassModelPicker.disabled = true;
 }
 
 function renderActivePromptSummary() {
@@ -689,21 +743,14 @@ function renderModelList() {
     const meta = document.createElement("span");
     meta.textContent = `${model.provider || "provider"} | ${model.adapter || "adapter"} | ${
       model.model || "model"
-    }${model.apiKey ? " | key configured" : ""}${model.finalPassActive ? " | final pass" : ""}`;
+    } | ${describeModelKey(model)}${model.finalPassActive ? " | final pass" : ""}`;
 
     main.appendChild(name);
     main.appendChild(meta);
 
     const actions = document.createElement("div");
     actions.className = "model-row-actions";
-    actions.appendChild(createModelActionButton(model.active ? "Active" : "Use", () =>
-      activateModel(model.id),
-    ));
-    actions.appendChild(
-      createModelActionButton(model.finalPassActive ? "Final" : "Use final", () =>
-        activateFinalPassModel(model.id),
-      ),
-    );
+    // Selection lives in the header pickers now; settings rows only manage configs.
     actions.appendChild(createModelActionButton("Edit", () => editModel(model)));
     actions.appendChild(createModelActionButton("Delete", () => removeModel(model.id), "danger"));
 
@@ -723,10 +770,34 @@ function createModelActionButton(label, handler, variant = "") {
   return button;
 }
 
+// Where a model's effective key comes from: its own override, the linked provider,
+// or nowhere yet. Mirrors the resolution in background.applyProviderCredentials.
+function describeModelKey(model) {
+  if (model.apiKey) return "key: own";
+  const provider = model.providerId
+    ? window.OtterCopyProviderStore.getProvider(providerConfigs, model.providerId)
+    : null;
+  if (provider) {
+    return provider.apiKey ? `key: ${provider.name}` : `key: ${provider.name} (unset)`;
+  }
+  return "no key";
+}
+
+// Fill the model form's provider selector from the current providers.
+function renderProviderOptions(selectedId = "") {
+  modelFields.providerId.replaceChildren();
+  modelFields.providerId.appendChild(new Option("None (use key below)", ""));
+  providerConfigs.forEach((provider) => {
+    modelFields.providerId.appendChild(new Option(provider.name, provider.id));
+  });
+  modelFields.providerId.value = selectedId || "";
+}
+
 function editModel(model) {
   modelFields.id.value = model.id;
   modelFields.name.value = model.name || "";
   modelFields.provider.value = model.provider || "";
+  renderProviderOptions(model.providerId || "");
   modelFields.adapter.value = model.adapter || "google-genai";
   modelFields.model.value = model.model || "";
   modelFields.apiKey.value = model.apiKey || "";
@@ -742,6 +813,7 @@ function resetModelForm() {
   modelForm.reset();
   modelFields.id.value = "";
   modelFields.provider.value = "google";
+  renderProviderOptions("");
   modelFields.adapter.value = "google-genai";
   modelFields.headers.value = "{}";
   modelFields.options.value = "{}";
@@ -759,6 +831,7 @@ async function saveModel(event) {
       id: modelFields.id.value,
       name: modelFields.name.value,
       provider: modelFields.provider.value,
+      providerId: modelFields.providerId.value,
       adapter: modelFields.adapter.value,
       model: modelFields.model.value,
       apiKey: modelFields.apiKey.value,
@@ -775,13 +848,269 @@ async function saveModel(event) {
     if (!payload.model.trim()) throw new Error("Model ID is required.");
 
     modelConfigs = await window.OtterCopyModelStore.upsertModel(payload);
-    renderActiveModelSummary();
-    renderFinalPassModelSummary();
+    renderModelPickers();
     renderModelList();
     resetModelForm();
     setModelSettingsStatus("Model saved.", "success");
   } catch (error) {
     setModelSettingsStatus(error.message || "Model save failed.", "error");
+  }
+}
+
+function renderProviderList() {
+  providerList.replaceChildren();
+
+  if (providerConfigs.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "model-empty";
+    empty.textContent = "No providers configured.";
+    providerList.appendChild(empty);
+    return;
+  }
+
+  providerConfigs.forEach((provider) => {
+    const row = document.createElement("article");
+    row.className = "model-row";
+
+    const main = document.createElement("div");
+    main.className = "model-row-main";
+
+    const name = document.createElement("strong");
+    name.textContent = provider.name || provider.id;
+
+    const linkedCount = modelConfigs.filter((model) => model.providerId === provider.id).length;
+    const meta = document.createElement("span");
+    meta.textContent = `${provider.apiKey ? "key set" : "no key"} | ${linkedCount} model${
+      linkedCount === 1 ? "" : "s"
+    }${provider.baseUrl ? ` | ${provider.baseUrl}` : ""}`;
+
+    main.appendChild(name);
+    main.appendChild(meta);
+
+    const actions = document.createElement("div");
+    actions.className = "model-row-actions";
+    actions.appendChild(createModelActionButton("Edit", () => editProvider(provider)));
+    actions.appendChild(
+      createModelActionButton("Delete", () => removeProvider(provider.id), "danger"),
+    );
+
+    row.appendChild(main);
+    row.appendChild(actions);
+    providerList.appendChild(row);
+  });
+}
+
+function editProvider(provider) {
+  providerFields.id.value = provider.id;
+  providerFields.name.value = provider.name || "";
+  providerFields.apiKey.value = provider.apiKey || "";
+  providerFields.baseUrl.value = provider.baseUrl || "";
+  setProviderSettingsStatus(`Editing ${provider.name || provider.id}.`, "");
+}
+
+function resetProviderForm() {
+  providerForm.reset();
+  providerFields.id.value = "";
+  providerFields.name.value = "";
+  providerFields.apiKey.value = "";
+  providerFields.baseUrl.value = "";
+  setProviderSettingsStatus("", "");
+}
+
+async function saveProvider(event) {
+  event.preventDefault();
+  setProviderSettingsStatus("Saving provider...", "");
+
+  try {
+    const payload = {
+      id: providerFields.id.value,
+      provider: providerFields.name.value,
+      name: providerFields.name.value,
+      apiKey: providerFields.apiKey.value,
+      baseUrl: providerFields.baseUrl.value,
+    };
+
+    if (!payload.name.trim()) throw new Error("Provider name is required.");
+
+    providerConfigs = await window.OtterCopyProviderStore.upsertProvider(payload);
+    renderProviderList();
+    renderModelList();
+    // Refresh the model form's provider selector so a new provider is pickable now.
+    resetModelForm();
+    resetProviderForm();
+    setProviderSettingsStatus("Provider saved.", "success");
+  } catch (error) {
+    setProviderSettingsStatus(error.message || "Provider save failed.", "error");
+  }
+}
+
+async function removeProvider(providerId) {
+  const provider = providerConfigs.find((entry) => entry.id === providerId);
+  const label = provider ? provider.name || provider.id : "this provider";
+  const linkedCount = modelConfigs.filter((model) => model.providerId === providerId).length;
+  const warning = linkedCount
+    ? ` ${linkedCount} model(s) link to it and will fall back to their own key.`
+    : "";
+  if (!window.confirm(`Delete provider "${label}"?${warning}`)) {
+    return;
+  }
+
+  setProviderSettingsStatus("Deleting provider...", "");
+
+  try {
+    providerConfigs = await window.OtterCopyProviderStore.deleteProvider(providerId);
+    renderProviderList();
+    renderModelList();
+    resetModelForm();
+    setProviderSettingsStatus("Provider deleted.", "success");
+  } catch (error) {
+    setProviderSettingsStatus(error.message || "Provider deletion failed.", "error");
+  }
+}
+
+function setProviderSettingsStatus(message, state) {
+  setStatusElement(providerSettingsStatus, message, state);
+}
+
+// Import/export configuration. Version 2 = the provider + model schema (T3);
+// the version gates future migrations of exported files.
+const CONFIG_SCHEMA_VERSION = 2;
+
+async function exportConfig() {
+  setModelSettingsStatus("Preparing export...", "");
+
+  try {
+    const [providers, models] = await Promise.all([
+      window.OtterCopyProviderStore.getProviders(),
+      window.OtterCopyModelStore.getModels(),
+    ]);
+    const payload = {
+      schemaVersion: CONFIG_SCHEMA_VERSION,
+      exportedAt: new Date().toISOString(),
+      providers,
+      models,
+    };
+
+    // Anchor + object URL downloads from an MV3 popup without the downloads permission.
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `ottercopy-config-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+
+    setModelSettingsStatus(
+      `Exported ${providers.length} provider(s) and ${models.length} model(s). ` +
+        "The file contains live API keys — store it securely.",
+      "success",
+    );
+  } catch (error) {
+    setModelSettingsStatus(error.message || "Export failed.", "error");
+  }
+}
+
+// Validate before touching storage: right schema, has content, required model fields.
+function validateImportPayload(data) {
+  const errors = [];
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return { errors: ["File is not a valid configuration object."], providers: [], models: [] };
+  }
+  if (data.schemaVersion !== CONFIG_SCHEMA_VERSION) {
+    errors.push(
+      `Unsupported schemaVersion (expected ${CONFIG_SCHEMA_VERSION}, got ${
+        data.schemaVersion == null ? "none" : data.schemaVersion
+      }).`,
+    );
+  }
+  const providers = Array.isArray(data.providers) ? data.providers : [];
+  const models = Array.isArray(data.models) ? data.models : [];
+  if (providers.length === 0 && models.length === 0) {
+    errors.push("File contains no providers or models.");
+  }
+  models.forEach((model, index) => {
+    const hasName = model && String(model.name || "").trim();
+    const hasModelId = model && String(model.model || "").trim();
+    if (!hasName || !hasModelId) {
+      errors.push(`Model #${index + 1} is missing a name or model id.`);
+    }
+  });
+  return { errors, providers, models };
+}
+
+// Merge imported entries into existing by id (imported wins on collision); id-less
+// entries are appended and get fresh ids on normalize.
+function mergeById(existing, incoming) {
+  const byId = new Map(existing.map((entry) => [entry.id, entry]));
+  const extras = [];
+  incoming.forEach((entry) => {
+    if (!entry) return;
+    if (entry.id) {
+      byId.set(entry.id, entry);
+    } else {
+      extras.push(entry);
+    }
+  });
+  return [...byId.values(), ...extras];
+}
+
+async function importConfigFromFile(file) {
+  setModelSettingsStatus("Reading file...", "");
+
+  try {
+    let data;
+    try {
+      data = JSON.parse(await file.text());
+    } catch {
+      throw new Error("File is not valid JSON.");
+    }
+
+    const { errors, providers, models } = validateImportPayload(data);
+    if (errors.length > 0) {
+      throw new Error(`Import blocked:\n- ${errors.join("\n- ")}`);
+    }
+
+    const existingProviders = await window.OtterCopyProviderStore.getProviders();
+    const existingModels = await window.OtterCopyModelStore.getModels();
+    const providerCollisions = providers.filter((provider) =>
+      existingProviders.some((entry) => entry.id === provider.id),
+    ).length;
+    const modelCollisions = models.filter((model) =>
+      existingModels.some((entry) => entry.id === model.id),
+    ).length;
+    const collisions = providerCollisions + modelCollisions;
+
+    const confirmation = [
+      `Import ${providers.length} provider(s) and ${models.length} model(s)?`,
+      collisions > 0
+        ? `${collisions} existing entr${collisions === 1 ? "y" : "ies"} with a matching id will be overwritten.`
+        : "No id conflicts with existing configs.",
+    ].join("\n");
+    if (!window.confirm(confirmation)) {
+      setModelSettingsStatus("Import cancelled.", "");
+      return;
+    }
+
+    providerConfigs = await window.OtterCopyProviderStore.saveProviders(
+      mergeById(existingProviders, providers),
+    );
+    modelConfigs = await window.OtterCopyModelStore.saveModels(
+      mergeById(existingModels, models),
+    );
+
+    renderModelPickers();
+    renderProviderList();
+    renderModelList();
+    resetProviderForm();
+    resetModelForm();
+    setModelSettingsStatus(
+      `Imported ${providers.length} provider(s) and ${models.length} model(s).`,
+      "success",
+    );
+  } catch (error) {
+    setModelSettingsStatus(error.message || "Import failed.", "error");
   }
 }
 
@@ -927,36 +1256,40 @@ async function removePrompt(promptId) {
   }
 }
 
-async function activateModel(modelId) {
-  setModelSettingsStatus("Activating model...", "");
+async function onActivePickerChange(event) {
+  const modelId = event.target.value;
+  if (!modelId) return;
 
   try {
     modelConfigs = await window.OtterCopyModelStore.activateModel(modelId);
-    renderActiveModelSummary();
-    renderFinalPassModelSummary();
-    renderModelList();
-    setModelSettingsStatus("Active model updated.", "success");
   } catch (error) {
-    setModelSettingsStatus(error.message || "Model activation failed.", "error");
+    // On failure, re-sync the picker to stored truth so it never shows a phantom pick.
+    modelConfigs = await window.OtterCopyModelStore.getModels();
+    console.debug("OtterCopy: could not set active model", error);
   }
+  refreshModelSelectionViews();
 }
 
-async function activateFinalPassModel(modelId) {
-  setModelSettingsStatus("Setting final pass model...", "");
+async function onFinalPassPickerChange(event) {
+  const modelId = event.target.value;
 
   try {
-    if (window.OtterCopyModelStore.getFinalPassModel(modelConfigs)?.id === modelId) {
-      modelConfigs = await window.OtterCopyModelStore.clearFinalPassModel();
-      setModelSettingsStatus("Final pass will use the active model.", "success");
-    } else {
-      modelConfigs = await window.OtterCopyModelStore.activateFinalPassModel(modelId);
-      setModelSettingsStatus("Final pass model updated.", "success");
-    }
-    renderActiveModelSummary();
-    renderFinalPassModelSummary();
-    renderModelList();
+    modelConfigs = modelId
+      ? await window.OtterCopyModelStore.activateFinalPassModel(modelId)
+      : await window.OtterCopyModelStore.clearFinalPassModel();
   } catch (error) {
-    setModelSettingsStatus(error.message || "Final pass model update failed.", "error");
+    modelConfigs = await window.OtterCopyModelStore.getModels();
+    console.debug("OtterCopy: could not set final pass model", error);
+  }
+  refreshModelSelectionViews();
+}
+
+// A selection change refreshes the header pickers, plus the settings list when it is open
+// (so the active-row highlight and final-pass marker stay in sync).
+function refreshModelSelectionViews() {
+  renderModelPickers();
+  if (!modelSettingsPanel.classList.contains("hidden")) {
+    renderModelList();
   }
 }
 
@@ -971,8 +1304,7 @@ async function removeModel(modelId) {
 
   try {
     modelConfigs = await window.OtterCopyModelStore.deleteModel(modelId);
-    renderActiveModelSummary();
-    renderFinalPassModelSummary();
+    renderModelPickers();
     renderModelList();
     resetModelForm();
     setModelSettingsStatus("Model deleted.", "success");
