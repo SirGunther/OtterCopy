@@ -84,15 +84,13 @@ let promptConfigs = [];
 let providerConfigs = [];
 let latestResultPollTimer = 0;
 let latestResultState = null;
+let promptSelectionSync = Promise.resolve();
 
 copyButtons.forEach((button) => {
   button.addEventListener("click", () => copyFromActiveTab(button.dataset.mode));
 });
 refineButton.addEventListener("click", runRefine);
-refineType.addEventListener("change", () => {
-  updateExtendedGating();
-  saveUiPrefs();
-});
+refineType.addEventListener("change", onRefineTypeChange);
 extendedToggle.addEventListener("change", saveUiPrefs);
 stopRefinementButton.addEventListener("click", stopRefinement);
 copyLatestResultButton.addEventListener("click", copyLatestResult);
@@ -124,10 +122,13 @@ initializeSettings().then(async () => {
 });
 refreshLatestResultSummary();
 
-// Build the Type dropdown from the whole prompt library (built-ins + custom),
-// preserving the current selection when possible.
-function populateRefineTypes() {
-  const previous = refineType.value;
+function getActivePromptId() {
+  return window.OtterCopyPromptStore.getActivePrompt(promptConfigs)?.id || "";
+}
+
+// Build the Type dropdown from the whole prompt library (built-ins + custom).
+// The selected option mirrors promptStore's canonical active prompt.
+function populateRefineTypes(selectedPromptId = getActivePromptId()) {
   refineType.innerHTML = "";
   promptConfigs.forEach((prompt) => {
     const option = document.createElement("option");
@@ -135,10 +136,18 @@ function populateRefineTypes() {
     option.textContent = prompt.name;
     refineType.appendChild(option);
   });
-  if (previous && promptConfigs.some((prompt) => prompt.id === previous)) {
-    refineType.value = previous;
+  if (selectedPromptId && promptConfigs.some((prompt) => prompt.id === selectedPromptId)) {
+    refineType.value = selectedPromptId;
   }
   updateExtendedGating();
+}
+
+function refreshPromptSelectionViews() {
+  populateRefineTypes();
+  renderActivePromptSummary();
+  if (!modelSettingsPanel.classList.contains("hidden")) {
+    renderPromptList();
+  }
 }
 
 // The Extended toggle only applies to prompts that have an extended pipeline.
@@ -153,7 +162,8 @@ function updateExtendedGating() {
 // Dispatch through the existing copy/refine paths. Extended-capable prompt with
 // the toggle on -> its multi-pass pipeline; otherwise a single-pass refine using
 // the selected prompt id.
-function runRefine() {
+async function runRefine() {
+  await promptSelectionSync;
   const promptId = refineType.value;
   const pipeline = EXTENDED_PIPELINE_BY_PROMPT_ID[promptId];
   if (pipeline && extendedToggle.checked) {
@@ -168,9 +178,6 @@ function loadUiPrefs() {
   try {
     chrome.storage.sync.get(UI_PREFS_KEY, (data) => {
       const prefs = (data && data[UI_PREFS_KEY]) || {};
-      if (prefs.promptId && promptConfigs.some((prompt) => prompt.id === prefs.promptId)) {
-        refineType.value = prefs.promptId;
-      }
       updateExtendedGating();
       if (!extendedToggle.disabled) {
         extendedToggle.checked = Boolean(prefs.extended);
@@ -185,7 +192,6 @@ function saveUiPrefs() {
   try {
     chrome.storage.sync.set({
       [UI_PREFS_KEY]: {
-        promptId: refineType.value,
         extended: extendedToggle.checked,
       },
     });
@@ -225,6 +231,43 @@ function removeLocalStorage(key) {
       resolve();
     }
   });
+}
+
+function syncPromptSelection(promptId, { setPromptStatus = false } = {}) {
+  if (!promptId || !promptConfigs.some((prompt) => prompt.id === promptId)) {
+    refreshPromptSelectionViews();
+    return promptSelectionSync;
+  }
+
+  if (setPromptStatus) {
+    setPromptSettingsStatus("Activating prompt...", "");
+  }
+
+  promptSelectionSync = window.OtterCopyPromptStore.activatePrompt(promptId)
+    .then((prompts) => {
+      promptConfigs = prompts;
+      refreshPromptSelectionViews();
+      if (setPromptStatus) {
+        setPromptSettingsStatus("Active prompt updated.", "success");
+      }
+    })
+    .catch(async (error) => {
+      promptConfigs = await window.OtterCopyPromptStore.getPrompts();
+      refreshPromptSelectionViews();
+      if (setPromptStatus) {
+        setPromptSettingsStatus(error.message || "Prompt activation failed.", "error");
+      } else {
+        console.debug("OtterCopy: could not activate selected prompt", error);
+      }
+    });
+
+  return promptSelectionSync;
+}
+
+function onRefineTypeChange() {
+  updateExtendedGating();
+  saveUiPrefs();
+  syncPromptSelection(refineType.value);
 }
 
 // Snapshot every input feeding a refine attempt, keyed to its runId, so a later
@@ -269,6 +312,7 @@ async function restoreLastAttemptIfNeeded() {
     const inputs = snapshot.inputs;
     if (inputs.promptId && promptConfigs.some((prompt) => prompt.id === inputs.promptId)) {
       refineType.value = inputs.promptId;
+      await syncPromptSelection(inputs.promptId);
     }
     updateExtendedGating();
     if (!extendedToggle.disabled) {
@@ -635,9 +679,8 @@ async function initializeSettings() {
     modelConfigs = await window.OtterCopyModelStore.getModels();
     promptConfigs = await window.OtterCopyPromptStore.getPrompts();
     providerConfigs = await window.OtterCopyProviderStore.getProviders();
-    populateRefineTypes();
+    refreshPromptSelectionViews();
     renderModelPickers();
-    renderActivePromptSummary();
   } catch (error) {
     disableModelPickers("Settings unavailable");
     activePromptSummary.textContent = error.message || "Settings unavailable";
@@ -1200,8 +1243,7 @@ async function savePrompt(event) {
     if (!payload.content.trim()) throw new Error("Prompt instructions are required.");
 
     promptConfigs = await window.OtterCopyPromptStore.upsertPrompt(payload);
-    renderActivePromptSummary();
-    renderPromptList();
+    refreshPromptSelectionViews();
     resetPromptForm();
     setPromptSettingsStatus("Prompt saved.", "success");
   } catch (error) {
@@ -1210,16 +1252,7 @@ async function savePrompt(event) {
 }
 
 async function activatePrompt(promptId) {
-  setPromptSettingsStatus("Activating prompt...", "");
-
-  try {
-    promptConfigs = await window.OtterCopyPromptStore.activatePrompt(promptId);
-    renderActivePromptSummary();
-    renderPromptList();
-    setPromptSettingsStatus("Active prompt updated.", "success");
-  } catch (error) {
-    setPromptSettingsStatus(error.message || "Prompt activation failed.", "error");
-  }
+  await syncPromptSelection(promptId, { setPromptStatus: true });
 }
 
 async function resetBuiltInPrompt(promptId) {
@@ -1227,8 +1260,7 @@ async function resetBuiltInPrompt(promptId) {
 
   try {
     promptConfigs = await window.OtterCopyPromptStore.resetBuiltInPrompt(promptId);
-    renderActivePromptSummary();
-    renderPromptList();
+    refreshPromptSelectionViews();
     resetPromptForm();
     setPromptSettingsStatus("Prompt reset from packaged file.", "success");
   } catch (error) {
@@ -1247,8 +1279,7 @@ async function removePrompt(promptId) {
 
   try {
     promptConfigs = await window.OtterCopyPromptStore.deletePrompt(promptId);
-    renderActivePromptSummary();
-    renderPromptList();
+    refreshPromptSelectionViews();
     resetPromptForm();
     setPromptSettingsStatus("Prompt deleted.", "success");
   } catch (error) {
